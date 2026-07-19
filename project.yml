@@ -3,7 +3,6 @@ options:
   bundleIdPrefix: com.olepe.beelinenavi
   deploymentTarget:
     iOS: "16.0"
-
 targets:
   BeelineNavi:
     type: application
@@ -22,3 +21,4 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        GENERATE_INFOPLIST_FILE: NO
