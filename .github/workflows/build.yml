@@ -29,6 +29,15 @@ jobs:
         run: |
           grep -A2 "INFOPLIST" BeelineNavi.xcodeproj/project.pbxproj || echo "INFOPLIST klic nenalezen v project.pbxproj"
 
+      - name: Debug - show resolved build settings
+        run: |
+          xcodebuild -project BeelineNavi.xcodeproj \
+            -scheme BeelineNavi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -showBuildSettings | grep -i -E "infoplist|srcroot|^\s*PROJECT_DIR"
+
       - name: Build unsigned .app (Simulator-Generic, no signing)
         run: |
           xcodebuild -project BeelineNavi.xcodeproj \
