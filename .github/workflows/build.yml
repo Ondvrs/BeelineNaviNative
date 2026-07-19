@@ -18,8 +18,9 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Warm-up build (primes Info.plist processing, ignore result)
+      - name: Build unsigned .app (plain build, no archive)
         run: |
+          mkdir -p build/Products
           xcodebuild -project BeelineNavi.xcodeproj \
             -scheme BeelineNavi \
             -configuration Release \
@@ -27,27 +28,17 @@ jobs:
             -destination "generic/platform=iOS" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            archive -archivePath build/_warmup.xcarchive || true
-
-      - name: Build unsigned .app (real archive)
-        run: |
-          xcodebuild -project BeelineNavi.xcodeproj \
-            -scheme BeelineNavi \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            archive -archivePath build/BeelineNavi.xcarchive
+            CONFIGURATION_BUILD_DIR=$(pwd)/build/Products \
+            build
 
       - name: Verify bundled Info.plist has our keys
         run: |
-          plutil -p build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app/Info.plist
+          plutil -p build/Products/BeelineNavi.app/Info.plist
 
       - name: Package .app into unsigned .ipa
         run: |
           mkdir -p build/Payload
-          cp -r build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app build/Payload/
+          cp -r build/Products/BeelineNavi.app build/Payload/
           cd build && zip -r BeelineNavi-unsigned.ipa Payload
 
       - name: Upload IPA artifact
