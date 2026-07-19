@@ -9,12 +9,26 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Debug - list repo files
+        run: |
+          echo "--- Obsah repozitare ---"
+          ls -la
+          echo "--- Obsah Info.plist (pokud existuje) ---"
+          cat Info.plist || echo "Info.plist NENALEZEN v rootu repa!"
+
       - name: Install XcodeGen
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew install xcodegen
+
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: xcodegen generate --spec project.yml
+
+      - name: Debug - show INFOPLIST settings in generated project
+        run: |
+          grep -A2 "INFOPLIST" BeelineNavi.xcodeproj/project.pbxproj || echo "INFOPLIST klic nenalezen v project.pbxproj"
+
       - name: Build unsigned .app (Simulator-Generic, no signing)
         run: |
           xcodebuild -project BeelineNavi.xcodeproj \
@@ -25,14 +39,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             archive -archivePath build/BeelineNavi.xcarchive
+
       - name: Debug - print bundled Info.plist
         run: |
           plutil -p build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app/Info.plist
+
       - name: Package .app into unsigned .ipa
         run: |
           mkdir -p build/Payload
           cp -r build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app build/Payload/
           cd build && zip -r BeelineNavi-unsigned.ipa Payload
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
