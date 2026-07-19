@@ -10,35 +10,26 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Debug - list repo files
-        run: |
-          echo "--- Obsah repozitare ---"
-          ls -la
-          echo "--- Obsah Info.plist (pokud existuje) ---"
-          cat Info.plist || echo "Info.plist NENALEZEN v rootu repa!"
-
       - name: Install XcodeGen
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate --spec project.yml
+        run: xcodegen generate
 
-      - name: Debug - show INFOPLIST settings in generated project
-        run: |
-          grep -A2 "INFOPLIST" BeelineNavi.xcodeproj/project.pbxproj || echo "INFOPLIST klic nenalezen v project.pbxproj"
-
-      - name: Debug - show resolved build settings
+      - name: Warm-up build (primes Info.plist processing, ignore result)
         run: |
           xcodebuild -project BeelineNavi.xcodeproj \
             -scheme BeelineNavi \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
-            -showBuildSettings | grep -i -E "infoplist|srcroot|^\s*PROJECT_DIR"
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive -archivePath build/_warmup.xcarchive || true
 
-      - name: Build unsigned .app (Simulator-Generic, no signing)
+      - name: Build unsigned .app (real archive)
         run: |
           xcodebuild -project BeelineNavi.xcodeproj \
             -scheme BeelineNavi \
@@ -49,20 +40,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             archive -archivePath build/BeelineNavi.xcarchive
 
-      - name: Debug - inspect ProcessInfoPlistFile step in build log
-        run: |
-          xcodebuild -project BeelineNavi.xcodeproj \
-            -scheme BeelineNavi \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            archive -archivePath build/BeelineNavi2.xcarchive 2>&1 | tee build.log
-          echo "=== Hledani ProcessInfoPlistFile v logu ==="
-          grep -i -A 5 "ProcessInfoPlistFile" build.log || echo "ProcessInfoPlistFile se v logu vubec neobjevuje!"
-
-      - name: Debug - print bundled Info.plist
+      - name: Verify bundled Info.plist has our keys
         run: |
           plutil -p build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app/Info.plist
 
