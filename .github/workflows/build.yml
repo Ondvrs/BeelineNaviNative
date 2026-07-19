@@ -9,6 +9,9 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+      - name: Show repo structure
+        run: |
+          find . -maxdepth 3 -not -path "*/.git/*"
       - name: Generate Xcode project
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
