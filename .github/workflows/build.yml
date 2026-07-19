@@ -29,7 +29,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR=$(pwd)/build/Products \
-            build
+            build 2>&1 | tee full_build.log
+          echo "=== VSECHNY operace tykajici se Info.plist, v poradi ==="
+          grep -n -i "info.plist" full_build.log
 
       - name: Verify bundled Info.plist has our keys
         run: |
