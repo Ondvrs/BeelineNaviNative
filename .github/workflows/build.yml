@@ -9,6 +9,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+      - name: Find all Info.plist files in repo
+        run: find . -iname "Info.plist" -not -path "*/DerivedData/*"
       - name: Install XcodeGen
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
@@ -17,7 +19,7 @@ jobs:
         run: xcodegen generate
       - name: Show INFOPLIST build settings
         run: |
-          xcodebuild -project BeelineNavi.xcodeproj -scheme BeelineNavi -showBuildSettings | grep -i INFOPLIST
+          xcodebuild -project BeelineNavi.xcodeproj -scheme BeelineNavi -configuration Release -sdk iphoneos -showBuildSettings | grep -i INFOPLIST
       - name: Build unsigned .app (plain build, no archive)
         run: |
           mkdir -p build/Products
