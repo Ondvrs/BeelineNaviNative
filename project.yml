@@ -12,8 +12,6 @@ targets:
       - path: ContentView.swift
     info:
       path: Info.plist
-      properties:
-        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.olepe.beelinenavi
