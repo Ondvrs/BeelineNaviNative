@@ -49,12 +49,18 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             archive -archivePath build/BeelineNavi.xcarchive
 
-      - name: Debug - find all Info.plist files in DerivedData
+      - name: Debug - inspect ProcessInfoPlistFile step in build log
         run: |
-          find ~/Library/Developer/Xcode/DerivedData -iname "*info.plist" 2>/dev/null | while read f; do
-            echo "=== $f ==="
-            plutil -p "$f" 2>/dev/null || cat "$f"
-          done
+          xcodebuild -project BeelineNavi.xcodeproj \
+            -scheme BeelineNavi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive -archivePath build/BeelineNavi2.xcarchive 2>&1 | tee build.log
+          echo "=== Hledani ProcessInfoPlistFile v logu ==="
+          grep -i -A 5 "ProcessInfoPlistFile" build.log || echo "ProcessInfoPlistFile se v logu vubec neobjevuje!"
 
       - name: Debug - print bundled Info.plist
         run: |
