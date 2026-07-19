@@ -9,17 +9,17 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-      - name: Find all Info.plist files in repo
-        run: find . -iname "Info.plist" -not -path "*/DerivedData/*"
-      - name: Install XcodeGen
+      - name: Generate Xcode project
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew install xcodegen
-      - name: Generate Xcode project
-        run: xcodegen generate
-      - name: Show INFOPLIST build settings
+          xcodegen generate
+      - name: CHECK Info.plist AFTER xcodegen generate
         run: |
-          xcodebuild -project BeelineNavi.xcodeproj -scheme BeelineNavi -configuration Release -sdk iphoneos -showBuildSettings | grep -i INFOPLIST
+          echo "=== Obsah Info.plist PO xcodegen generate ==="
+          cat Info.plist
+          echo "=== Hledani markeru ==="
+          grep -n "XDebugMarker" Info.plist || echo ">>> MARKER ZMIZEL - XCODEGEN PREPSAL SOUBOR <<<"
       - name: Build unsigned .app (plain build, no archive)
         run: |
           mkdir -p build/Products
@@ -31,13 +31,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR=$(pwd)/build/Products \
-            build 2>&1 | tee full_build.log
-          echo "=== VSECHNY operace tykajici se Info.plist, v poradi ==="
-          grep -n -i "info.plist" full_build.log
-      - name: Show intermediate processed Info.plist
-        run: |
-          echo "=== Hledani Processed-Info.plist v DerivedData ==="
-          find /Users/runner/Library/Developer/Xcode/DerivedData -iname "Processed-Info.plist" -exec echo "--- {} ---" \; -exec plutil -p {} \;
+            build
       - name: Verify bundled Info.plist has our keys
         run: |
           plutil -p build/Products/BeelineNavi.app/Info.plist
