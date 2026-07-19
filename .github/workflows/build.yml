@@ -16,10 +16,7 @@ jobs:
           xcodegen generate
       - name: CHECK Info.plist AFTER xcodegen generate
         run: |
-          echo "=== Obsah Info.plist PO xcodegen generate ==="
           cat Info.plist
-          echo "=== Hledani markeru ==="
-          grep -n "XDebugMarker" Info.plist || echo ">>> MARKER ZMIZEL - XCODEGEN PREPSAL SOUBOR <<<"
       - name: Build unsigned .app (plain build, no archive)
         run: |
           mkdir -p build/Products
