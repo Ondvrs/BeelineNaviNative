@@ -1,24 +1,45 @@
-name: BeelineNavi
-options:
-  bundleIdPrefix: com.olepe.beelinenavi
-  deploymentTarget:
-    iOS: "16.0"
+name: Build unsigned IPA
 
-targets:
-  BeelineNavi:
-    type: application
-    platform: iOS
-    sources:
-      - path: ContentView.swift
-    info:
-      path: Info.plist
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.olepe.beelinenavi
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        SWIFT_VERSION: 5.0
-        TARGETED_DEVICE_FAMILY: "1"
-        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: |
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned .app (Simulator-Generic, no signing)
+        run: |
+          xcodebuild -project BeelineNavi.xcodeproj \
+            -scheme BeelineNavi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive -archivePath build/BeelineNavi.xcarchive
+
+      - name: Package .app into unsigned .ipa
+        run: |
+          mkdir -p build/Payload
+          cp -r build/BeelineNavi.xcarchive/Products/Applications/BeelineNavi.app build/Payload/
+          cd build && zip -r BeelineNavi-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeelineNavi-unsigned-ipa
+          path: build/BeelineNavi-unsigned.ipa
