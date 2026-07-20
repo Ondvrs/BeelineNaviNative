@@ -23,6 +23,8 @@ targets:
         NSBluetoothAlwaysUsageDescription: "Aplikace potrebuje Bluetooth pro komunikaci s ESP32 navigacnim displejem."
         UIBackgroundModes: [location, bluetooth-central]
         UILaunchScreen: {}
+    dependencies:
+      - sdk: MapKit.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.olepe.beelinenavi
