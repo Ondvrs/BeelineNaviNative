@@ -7,6 +7,113 @@ import MapKit
 let SERVICE_UUID = CBUUID(string: "4fafc201-1fb5-459e-8fcc-c5c9c331914b")
 let CHARACTERISTIC_UUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b26a8")
 
+// MARK: - Design tokeny (moto/dashboard styl)
+extension Color {
+    init(hex: String) {
+        let scanner = Scanner(string: hex)
+        var rgb: UInt64 = 0
+        scanner.scanHexInt64(&rgb)
+        let r = Double((rgb >> 16) & 0xFF) / 255
+        let g = Double((rgb >> 8) & 0xFF) / 255
+        let b = Double(rgb & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
+enum Moto {
+    static let asfalt = Color(hex: "0D0F12")
+    static let panel = Color(hex: "1A1D21")
+    static let panelHranice = Color(hex: "2A2E33")
+    static let redline = Color(hex: "FF4713")
+    static let jantar = Color(hex: "FFB800")
+    static let signal = Color(hex: "00E676")
+    static let textHlavni = Color(hex: "F2F0EB")
+    static let textTlumeny = Color(hex: "6B7280")
+
+    static func eyebrow(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .tracking(1.8)
+            .foregroundColor(Moto.textTlumeny)
+    }
+}
+
+struct MotoPanel<Content: View>: View {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        content
+            .padding(16)
+            .background(Moto.panel)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Moto.panelHranice, lineWidth: 1))
+            .cornerRadius(14)
+    }
+}
+
+struct MotoTlacitko: View {
+    let titulek: String
+    let barva: Color
+    let action: () -> Void
+    var vypnuto: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(titulek.uppercased())
+                .font(.system(size: 15, weight: .heavy, design: .rounded))
+                .tracking(0.8)
+                .foregroundColor(vypnuto ? Moto.textTlumeny : .black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(vypnuto ? Moto.panelHranice : barva)
+                .cornerRadius(10)
+        }
+        .disabled(vypnuto)
+    }
+}
+
+// MARK: - Kruhovy smerovy ukazatel (stejny princip jako displej na ESP32)
+struct SmerovyUkazatel: View {
+    var uhel: Int
+    var aktivni: Bool
+    var pulzuje: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(pulzuje ? Moto.jantar : Moto.panelHranice, lineWidth: 3)
+                .frame(width: 200, height: 200)
+
+            ForEach(0..<24) { i in
+                Rectangle()
+                    .fill(Moto.textTlumeny.opacity(0.5))
+                    .frame(width: 2, height: i % 6 == 0 ? 10 : 5)
+                    .offset(y: -92)
+                    .rotationEffect(.degrees(Double(i) * 15))
+            }
+
+            SipkaTvar()
+                .fill(pulzuje ? Moto.jantar : (aktivni ? Moto.redline : Moto.textTlumeny))
+                .frame(width: 70, height: 110)
+                .rotationEffect(.degrees(Double(uhel)))
+                .animation(.easeOut(duration: 0.35), value: uhel)
+        }
+        .frame(width: 200, height: 200)
+    }
+}
+
+struct SipkaTvar: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let stred = rect.width / 2
+        p.move(to: CGPoint(x: stred, y: 0))
+        p.addLine(to: CGPoint(x: rect.width * 0.8, y: rect.height * 0.55))
+        p.addLine(to: CGPoint(x: stred, y: rect.height * 0.4))
+        p.addLine(to: CGPoint(x: rect.width * 0.2, y: rect.height * 0.55))
+        p.closeSubpath()
+        return p
+    }
+}
+
 // MARK: - Hlavni logika (poloha + BLE), bezi i na pozadi
 class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCentralManagerDelegate, CBPeripheralDelegate {
 
@@ -19,6 +126,12 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     @Published var poslednaZprava: String = "---"
     @Published var aktivni: Bool = false
     @Published var aktualniPoloha: CLLocationCoordinate2D?
+
+    @Published var aktualniUhel: Int = 0
+    @Published var aktualniVzdalenost: String = "---"
+    @Published var aktualniCas: String = "---"
+    @Published var aktualniPokyn: String = "---"
+    @Published var blizkoOdbocky: Bool = false
 
     var cilLat: Double = 0
     var cilLon: Double = 0
@@ -37,7 +150,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     func pozadejOOpravneni() {
         locationManager.requestAlwaysAuthorization()
-        // Pro zobrazeni modre tecky na mape staci "when in use", vyzadame hned na startu
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
     }
@@ -63,7 +175,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         locationManager.stopUpdatingLocation()
     }
 
-    // --- CBCentralManagerDelegate ---
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
             print("Bluetooth je zapnuty.")
@@ -86,11 +197,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stavPripojeni = "Odpojeno"
         writeCharacteristic = nil
-        // Zkusit znovu najit a pripojit
         centralManager.scanForPeripherals(withServices: [SERVICE_UUID], options: nil)
     }
 
-    // --- CBPeripheralDelegate ---
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == SERVICE_UUID {
@@ -106,7 +215,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // --- CLLocationManagerDelegate ---
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let poloha = locations.last else { return }
         DispatchQueue.main.async {
@@ -121,7 +229,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
-    // --- Vypocet a odeslani ---
     private func vyhodnotPozici(poloha: CLLocation) {
         let myLat = poloha.coordinate.latitude
         let myLon = poloha.coordinate.longitude
@@ -133,12 +240,17 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         let hodiny = formatter.string(from: Date())
+        let blizko = vzdalenost < 60
 
-        // Stejny format jako webova appka: uhel,cas,flag,HH:MM,vzdalenost,pokyn
-        let zprava = "\(Int(azimut)),---,0,\(hodiny),\(vzdText),Jed k cili"
+        let zprava = "\(Int(azimut)),---,\(blizko ? 1 : 0),\(hodiny),\(vzdText),Jed k cili"
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
+            self.aktualniUhel = Int(azimut)
+            self.aktualniVzdalenost = vzdText
+            self.aktualniCas = hodiny
+            self.aktualniPokyn = blizko ? "Blízko cíle" : "Jed k cíli"
+            self.blizkoOdbocky = blizko
         }
         posliDoBLE(zprava)
     }
@@ -214,7 +326,6 @@ class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     }
 }
 
-// MARK: - Vypocet trasy pro vykresleni na mape (MKDirections)
 func spocitejTrasuNaMape(z start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, dokonceni: @escaping ([CLLocationCoordinate2D]) -> Void) {
     let request = MKDirections.Request()
     request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
@@ -236,7 +347,7 @@ func spocitejTrasuNaMape(z start: CLLocationCoordinate2D, do cil: CLLocationCoor
     }
 }
 
-// MARK: - Mapa (UIViewRepresentable, obaluje nativni MKMapView)
+// MARK: - Mapa v tmavem rezimu, s bezelem jako palubni displej
 struct MapaView: UIViewRepresentable {
     var cil: CLLocationCoordinate2D?
     var trasa: [CLLocationCoordinate2D]
@@ -246,6 +357,7 @@ struct MapaView: UIViewRepresentable {
         mapView.showsUserLocation = true
         mapView.delegate = context.coordinator
         mapView.userTrackingMode = .follow
+        mapView.overrideUserInterfaceStyle = .dark
         return mapView
     }
 
@@ -278,7 +390,7 @@ struct MapaView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
-                renderer.strokeColor = .systemBlue
+                renderer.strokeColor = UIColor(Moto.redline)
                 renderer.lineWidth = 5
                 return renderer
             }
@@ -294,90 +406,153 @@ struct ContentView: View {
 
     @State private var hledaniText: String = ""
     @State private var cilSouradnice: CLLocationCoordinate2D?
+    @State private var cilNazev: String = ""
     @State private var trasaBody: [CLLocationCoordinate2D] = []
     @State private var zobrazNavrhy = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Text("Beeline Navi (nativni)")
-                    .font(.title2).bold()
+        ZStack {
+            Moto.asfalt.ignoresSafeArea()
 
-                Text("Stav: \(navi.stavPripojeni)")
-                    .foregroundColor(navi.stavPripojeni == "SPOJENO" ? .green : .orange)
+            ScrollView {
+                VStack(spacing: 14) {
 
-                Button("Pozadat o opravneni polohy") {
-                    navi.pozadejOOpravneni()
-                }
-                .buttonStyle(.bordered)
-
-                Button("1. Pripojit ESP32") {
-                    navi.pripojitESP32()
-                }
-                .buttonStyle(.borderedProminent)
-
-                // --- Vyhledavani adresy s naseptavacem ---
-                VStack(alignment: .leading, spacing: 0) {
-                    TextField("Zadej město, ulici...", text: $hledaniText)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: hledaniText) { novyText in
-                            hledac.hledej(novyText)
-                            zobrazNavrhy = !novyText.isEmpty
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("BEELINE")
+                                .font(.system(size: 26, weight: .black, design: .rounded))
+                                .foregroundColor(Moto.textHlavni)
+                            Moto.eyebrow("Moto navigace")
                         }
+                        Spacer()
+                        StavIndikator(stav: navi.stavPripojeni)
+                    }
+                    .padding(.top, 8)
 
-                    if zobrazNavrhy && !hledac.navrhy.isEmpty {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(hledac.navrhy.prefix(5), id: \.self) { navrh in
-                                Button {
-                                    vyberNavrh(navrh)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(navrh.title).foregroundColor(.primary)
-                                        if !navrh.subtitle.isEmpty {
-                                            Text(navrh.subtitle).font(.caption).foregroundColor(.secondary)
+                    MotoPanel {
+                        VStack(spacing: 10) {
+                            SmerovyUkazatel(uhel: navi.aktualniUhel, aktivni: navi.aktivni, pulzuje: navi.blizkoOdbocky)
+
+                            HStack {
+                                VStack(spacing: 2) {
+                                    Moto.eyebrow("Vzdálenost")
+                                    Text(navi.aktualniVzdalenost)
+                                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                                        .foregroundColor(Moto.textHlavni)
+                                }
+                                Spacer()
+                                VStack(spacing: 2) {
+                                    Moto.eyebrow("Čas")
+                                    Text(navi.aktualniCas)
+                                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                                        .foregroundColor(Moto.textHlavni)
+                                }
+                                Spacer()
+                                VStack(spacing: 2) {
+                                    Moto.eyebrow("Pokyn")
+                                    Text(navi.aktualniPokyn)
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .foregroundColor(navi.blizkoOdbocky ? Moto.jantar : Moto.textHlavni)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                        }
+                    }
+
+                    MotoPanel {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Moto.eyebrow("2 · Vyhledat cíl")
+
+                            TextField("Zadej město, ulici...", text: $hledaniText)
+                                .font(.system(size: 16, design: .rounded))
+                                .foregroundColor(Moto.textHlavni)
+                                .padding(10)
+                                .background(Moto.asfalt)
+                                .cornerRadius(8)
+                                .onChange(of: hledaniText) { novyText in
+                                    hledac.hledej(novyText)
+                                    zobrazNavrhy = !novyText.isEmpty
+                                }
+
+                            if zobrazNavrhy && !hledac.navrhy.isEmpty {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(hledac.navrhy.prefix(5), id: \.self) { navrh in
+                                        Button { vyberNavrh(navrh) } label: {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(navrh.title)
+                                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                    .foregroundColor(Moto.textHlavni)
+                                                if !navrh.subtitle.isEmpty {
+                                                    Text(navrh.subtitle)
+                                                        .font(.system(size: 12, design: .rounded))
+                                                        .foregroundColor(Moto.textTlumeny)
+                                                }
+                                            }
+                                            .padding(.vertical, 8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        if navrh != hledac.navrhy.prefix(5).last {
+                                            Divider().background(Moto.panelHranice)
                                         }
                                     }
-                                    .padding(.vertical, 6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                Divider()
+                                .padding(.horizontal, 4)
+                            }
+
+                            if !cilNazev.isEmpty {
+                                HStack(spacing: 6) {
+                                    Circle().fill(Moto.signal).frame(width: 8, height: 8)
+                                    Text("Cíl: \(cilNazev)")
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundColor(Moto.textTlumeny)
+                                }
                             }
                         }
-                        .padding(8)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
+                    }
+
+                    MotoPanel {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Moto.eyebrow("Mapa")
+                            MapaView(cil: cilSouradnice, trasa: trasaBody)
+                                .frame(height: 260)
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Moto.panelHranice, lineWidth: 1))
+                        }
+                    }
+
+                    VStack(spacing: 10) {
+                        MotoTlacitko(titulek: "Povolit polohu", barva: Moto.textTlumeny) {
+                            navi.pozadejOOpravneni()
+                        }
+                        MotoTlacitko(titulek: "1 · Připojit ESP32", barva: Moto.jantar) {
+                            navi.pripojitESP32()
+                        }
+                        MotoTlacitko(
+                            titulek: navi.aktivni ? "Zastavit navigaci" : "3 · Spustit navigaci",
+                            barva: navi.aktivni ? Moto.redline : Moto.signal,
+                            action: {
+                                if navi.aktivni {
+                                    navi.zastavitNavigaci()
+                                } else if let cil = cilSouradnice {
+                                    navi.nastavCil(lat: cil.latitude, lon: cil.longitude)
+                                    navi.spustitNavigaci()
+                                }
+                            },
+                            vypnuto: cilSouradnice == nil && !navi.aktivni
+                        )
+                    }
+
+                    MotoPanel {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Moto.eyebrow("Odesláno přes BLE")
+                            Text(navi.poslednaZprava)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundColor(Moto.textTlumeny)
+                        }
                     }
                 }
-
-                // --- Mapa ---
-                MapaView(cil: cilSouradnice, trasa: trasaBody)
-                    .frame(height: 320)
-                    .cornerRadius(12)
-
-                Button(navi.aktivni ? "Zastavit navigaci" : "2. Spustit navigaci") {
-                    if navi.aktivni {
-                        navi.zastavitNavigaci()
-                    } else if let cil = cilSouradnice {
-                        navi.nastavCil(lat: cil.latitude, lon: cil.longitude)
-                        navi.spustitNavigaci()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(navi.aktivni ? .red : .green)
-                .disabled(cilSouradnice == nil && !navi.aktivni)
-
-                Divider()
-
-                Text("Posledni odeslana data:")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                Text(navi.poslednaZprava)
-                    .font(.system(.body, design: .monospaced))
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
+                .padding(16)
             }
-            .padding()
         }
         .onAppear {
             navi.pozadejOOpravneni()
@@ -388,6 +563,7 @@ struct ContentView: View {
         hledac.vyhledejSouradnice(pro: navrh) { souradnice, nazev in
             guard let souradnice = souradnice else { return }
             hledaniText = nazev
+            cilNazev = nazev
             zobrazNavrhy = false
             cilSouradnice = souradnice
 
@@ -400,11 +576,39 @@ struct ContentView: View {
     }
 }
 
+struct StavIndikator: View {
+    let stav: String
+
+    var barva: Color {
+        switch stav {
+        case "SPOJENO": return Moto.signal
+        case "Odpojeno": return Moto.textTlumeny
+        default: return Moto.jantar
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(barva).frame(width: 9, height: 9)
+            Text(stav.uppercased())
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                .tracking(0.5)
+                .foregroundColor(barva)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Moto.panel)
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Moto.panelHranice, lineWidth: 1))
+        .cornerRadius(20)
+    }
+}
+
 @main
 struct BeelineNaviApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(.dark)
         }
     }
 }
