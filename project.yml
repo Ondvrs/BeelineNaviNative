@@ -1,14 +1,17 @@
 name: BeelineNavi
 options:
   bundleIdPrefix: com.olepe
-
 targets:
   BeelineNavi:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
     sources:
-      - BeelineNavi
+      - path: .
+        excludes:
+          - "project.yml"
+          - "README.md"
+          - ".github/**"
     info:
       path: Info.plist
       properties:
