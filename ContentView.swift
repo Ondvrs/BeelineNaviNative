@@ -177,7 +177,7 @@ struct MotoTlacitko: View {
     }
 }
 
-// MARK: - Kruhovy smerovy ukazatel (stejny princip jako displej na ESP32), s blikanim podle nastaveni
+// MARK: - Kruhovy smerovy ukazatel s blikanim podle nastaveni
 struct SmerovyUkazatel: View {
     var uhel: Int
     var zona: Int
@@ -243,7 +243,7 @@ extension MKPolyline {
     }
 }
 
-// MARK: - Hlavni logika (poloha + BLE), bezi i na pozadi
+// MARK: - Hlavni logika (poloha + BLE)
 class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private var locationManager = CLLocationManager()
@@ -251,7 +251,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var esp32Peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
 
-    // Odkaz na nastaveni - injektuje ContentView pri vytvoreni
     var nastaveni: NastaveniManager? {
         didSet {
             spustOdesilaciTimer()
@@ -269,18 +268,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     @Published var aktualniPokyn: String = "---"
     @Published var aktualniZona: Int = 0
 
-    // Turn-by-turn kroky trasy
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
-
-    // Posledni znamy kompasovy heading
     private var posledniKompasHeading: Double?
 
-    // Debug / simulace GPS pohybu
     private var debugTimer: Timer?
     private var debugPoloha: CLLocationCoordinate2D?
 
-    // Samostatny TIMER pro odesilani dat do ESP32 v konfigurovatelnem intervalu
     private var sendTimer: Timer?
     private var posledniInterval: Double = -1.0
 
@@ -348,11 +342,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         zastavitDebugSimulaci()
     }
 
-    // --- SAMOSTATNÝ TIMER PRO ODESÍLÁNÍ DATA DO ESP32 ---
     func spustOdesilaciTimer() {
         guard let nastaveni = nastaveni else { return }
         
-        // Pokud uz timer bezi se stejnym intervalem, nic nemenime
         if sendTimer != nil && posledniInterval == nastaveni.odesilaciInterval {
             return
         }
@@ -454,9 +446,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // --- Vypocet a aktualizace stavu v pameti (bez priameho BLE sendu) ---
     private func vyhodnotPozici(poloha: CLLocation) {
-        // Kontrola, zda se mezitim nezmenil interval v nastaveni
         if let currentInterval = nastaveni?.odesilaciInterval, currentInterval != posledniInterval {
             spustOdesilaciTimer()
         }
@@ -556,7 +546,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    private func zastavirDebugSimulaci() {
+    private func zastavitDebugSimulaci() { // Opraven název (vyměněno 'r' za 't')
         debugTimer?.invalidate()
         debugTimer = nil
     }
@@ -571,13 +561,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         )
 
         if vzdalenostKFinalnimuCili < 8 {
-            zastavirDebugSimulaci()
+            zastavitDebugSimulaci()
             return
         }
 
         let (smerovyBod, _, _) = ziskejAktualniCilovyBod()
         let rychlostMS = (nastaveni?.debugRychlostKmh ?? 40) / 3.6
-        let krokM = rychlostMS * 0.2 // tik kazdych 200ms
+        let krokM = rychlostMS * 0.2
 
         var azimut = spoctiAzimut(
             lat1: soucasna.latitude, lon1: soucasna.longitude,
@@ -771,7 +761,7 @@ struct NastaveniView: View {
                 } header: {
                     Text("Časovač odesílání (Timer)")
                 } footer: {
-                    Text("Určuje, jak často se posílají nová data přes BLE nezávisle na GPS updatech. (Nízké hodnoty = plynulejší reakce, vyšší = úspora baterie).")
+                    Text("Určuje, jak často se posílají nová data přes BLE nezávisle na GPS updatech.")
                 }
 
                 Section {
@@ -829,9 +819,9 @@ struct NastaveniView: View {
                     Text("Debug / testování")
                 } footer: {
                     if nastaveni.debugSimulace {
-                        Text("Zapnuto: nejdřív si přes vyhledávání zadej normální cíl. Po stisknutí 'Spustit navigaci' se poloha bude automaticky pohybovat směrem k cíli (po vypočtené trase) místo reálného GPS.")
+                        Text("Zapnuto: poloha se bude automaticky pohybovat směrem k cíli přes zvolenou trasu místo reálného GPS.")
                     } else {
-                        Text("Zapni, pokud chceš otestovat displej ESP32 a celý projekt bez reálné jízdy.")
+                        Text("Zapni pro otestování displeje ESP32 bez nutnosti reálně jet.")
                     }
                 }
             }
@@ -903,7 +893,7 @@ struct ContentView: View {
                             .foregroundColor(paleta.textTlumeny)
                         TextField("Kam chcete jet?", text: $hledaniText)
                             .foregroundColor(paleta.textHlavni)
-                            .onChange(of: hledaniText) { novyText in
+                            .onChange(of: hledaniText) { _, novyText in // Opravená iOS 17+ syntaxe
                                 hledac.hledej(novyText)
                                 zobrazNavrhy = !novyText.isEmpty
                             }
@@ -976,7 +966,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
 
-                // Hlavni náhled: Kompas / Mapa
+                // Náhled kompasu nebo mapy
                 if navi.aktivni {
                     VStack(spacing: 16) {
                         SmerovyUkazatel(
@@ -1009,7 +999,7 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
                 }
 
-                // Spodní tlačítko Start / Stop
+                // Tlačítko Start / Stop
                 VStack {
                     if navi.aktivni {
                         MotoTlacitko(titulek: "Zastavit navigaci", barva: Moto.redline, paleta: paleta) {
