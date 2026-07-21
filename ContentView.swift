@@ -102,6 +102,14 @@ class NastaveniManager: ObservableObject {
         didSet { UserDefaults.standard.set(tmavyRezim, forKey: "tmavyRezim") }
     }
 
+    // NOVE: Debug / simulace GPS pro testovani bez realne jizdy
+    @Published var debugSimulace: Bool {
+        didSet { UserDefaults.standard.set(debugSimulace, forKey: "debugSimulace") }
+    }
+    @Published var debugRychlostKmh: Double {
+        didSet { UserDefaults.standard.set(debugRychlostKmh, forKey: "debugRychlostKmh") }
+    }
+
     var paleta: MotoPaleta { tmavyRezim ? .tmava : .svetla }
 
     init() {
@@ -111,6 +119,8 @@ class NastaveniManager: ObservableObject {
         self.vzdalenostCervena = d.object(forKey: "vzdalenostCervena") as? Double ?? 15
         self.blikaniMod = BlikaniMod(rawValue: d.integer(forKey: "blikaniMod")) ?? .zadne
         self.tmavyRezim = d.object(forKey: "tmavyRezim") as? Bool ?? true
+        self.debugSimulace = d.object(forKey: "debugSimulace") as? Bool ?? false
+        self.debugRychlostKmh = d.object(forKey: "debugRychlostKmh") as? Double ?? 40
     }
 
     // Vypocita zonu (0-3) podle vzdalenosti v metrech
@@ -253,9 +263,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
 
-    // NOVE: posledni znamy kompasovy heading (magnetometr), pouzity jako fallback,
+    // Posledni znamy kompasovy heading (magnetometr), pouzity jako fallback,
     // kdyz GPS-based smer jizdy (course) neni k dispozici (stani, nizka rychlost)
     private var posledniKompasHeading: Double?
+
+    // NOVE: Debug / simulace GPS pohybu pro testovani bez realne jizdy
+    private var debugTimer: Timer?
+    private var debugPoloha: CLLocationCoordinate2D?
 
     var cilLat: Double = 0
     var cilLon: Double = 0
@@ -277,7 +291,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
 
-        // NOVE: spustime i kompas (magnetometr), aby byl heading k dispozici
+        // Spustime i kompas (magnetometr), aby byl heading k dispozici
         // i kdyz stojime nebo jedeme pomalu a GPS-course neni spolehlivy
         if CLLocationManager.headingAvailable() {
             locationManager.startUpdatingHeading()
@@ -307,14 +321,21 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         centralManager.scanForPeripherals(withServices: [SERVICE_UUID], options: nil)
     }
 
+    // Spusti navigaci - bud realnym GPS, nebo simulaci, pokud je zapnuta v nastaveni
     func spustitNavigaci() {
         aktivni = true
-        locationManager.startUpdatingLocation()
+        if nastaveni?.debugSimulace == true {
+            locationManager.stopUpdatingLocation()
+            spustitDebugSimulaci()
+        } else {
+            locationManager.startUpdatingLocation()
+        }
     }
 
     func zastavitNavigaci() {
         aktivni = false
         locationManager.stopUpdatingLocation()
+        zastavitDebugSimulaci()
     }
 
     // --- CBCentralManagerDelegate ---
@@ -361,6 +382,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     // --- CLLocationManagerDelegate ---
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // Pokud bezi simulace, ignorujeme realne GPS updaty, aby si neprebily
+        guard nastaveni?.debugSimulace != true else { return }
+
         guard let poloha = locations.last else { return }
         DispatchQueue.main.async {
             self.aktualniPoloha = poloha.coordinate
@@ -374,10 +398,23 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
-    // NOVE: prijem kompasoveho headingu z magnetometru (fallback pro nizkou rychlost/stani)
+    // Prijem kompasoveho headingu z magnetometru (fallback pro nizkou rychlost/stani)
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         if newHeading.headingAccuracy >= 0 {
             self.posledniKompasHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        }
+    }
+
+    // Vraci bod, na ktery se ma prave navigovat (bud aktualni krok trasy, nebo primo cil)
+    private func ziskejAktualniCilovyBod() -> (bod: CLLocationCoordinate2D, pokyn: String, posledni: Bool) {
+        if !kroky.isEmpty, aktualniKrokIndex < kroky.count {
+            let krok = kroky[aktualniKrokIndex]
+            let bod = krok.polyline.prvniBod
+            let pokyn = krok.instructions.isEmpty ? "Pokracujte rovne" : krok.instructions
+            let posledni = (aktualniKrokIndex >= kroky.count - 1)
+            return (bod, pokyn, posledni)
+        } else {
+            return (CLLocationCoordinate2D(latitude: cilLat, longitude: cilLon), "Jed k cíli", true)
         }
     }
 
@@ -386,25 +423,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         let myLat = poloha.coordinate.latitude
         let myLon = poloha.coordinate.longitude
 
-        let cilovyBod: CLLocationCoordinate2D
-        var textPokynu: String
-        var jePosledniKrok = true
-
-        if !kroky.isEmpty, aktualniKrokIndex < kroky.count {
-            let krok = kroky[aktualniKrokIndex]
-            cilovyBod = krok.polyline.prvniBod
-            textPokynu = krok.instructions.isEmpty ? "Pokracujte rovne" : krok.instructions
-            jePosledniKrok = (aktualniKrokIndex >= kroky.count - 1)
-        } else {
-            cilovyBod = CLLocationCoordinate2D(latitude: cilLat, longitude: cilLon)
-            textPokynu = "Jed k cíli"
-        }
+        let (cilovyBod, textPokynu, jePosledniKrok) = ziskejAktualniCilovyBod()
 
         let vzdalenost = spoctiVzdalenost(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
         let azimutKCili = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
 
-        // --- NOVE: zohledni aktualni smer jizdy (heading), aby sipka ukazovala
-        //     relativne k tomu, kam se dives/jedes, ne absolutne k severu ---
+        // Zohledni aktualni smer jizdy (heading), aby sipka ukazovala relativne
+        // k tomu, kam se dives/jedes, ne absolutne k severu.
         // GPS-based smer jizdy (course) je spolehlivy jen za jizdy (rychlost > ~1 m/s).
         // Pri stani nebo pomale jizde pouzijeme kompas (magnetometr) jako fallback.
         let heading: Double
@@ -417,7 +442,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
 
         let relativniUhel = (azimutKCili - heading + 360).truncatingRemainder(dividingBy: 360)
-        // ------------------------------------------------------------------------
 
         // Postup na dalsi krok trasy, kdyz jsme dost blizko a jeste neni posledni krok
         if !kroky.isEmpty, !jePosledniKrok, vzdalenost < 20 {
@@ -476,6 +500,99 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         brng = (brng + 360).truncatingRemainder(dividingBy: 360)
         return brng
     }
+
+    // ================== NOVE: DEBUG / SIMULACE GPS ==================
+    // Umoznuje testovat cely projekt (appka + ESP32 displej) bez realne
+    // jizdy - poloha se sama pravidelne posouva smerem k zadanemu cili
+    // po jiz vypoctene trase (pokud existuje), jinak primo k cili.
+
+    private func spustitDebugSimulaci() {
+        // Pocatecni bod: posledni znama realna poloha, jinak nahodny bod
+        // cca 800 m od cile, aby simulace mela co "ujet".
+        let start: CLLocationCoordinate2D
+        if let znama = aktualniPoloha {
+            start = znama
+        } else {
+            let nahodnyAzimut = Double.random(in: 0..<360)
+            start = bodVeSmeru(
+                z: CLLocationCoordinate2D(latitude: cilLat, longitude: cilLon),
+                azimut: nahodnyAzimut,
+                vzdalenostM: 800
+            )
+        }
+        debugPoloha = start
+        DispatchQueue.main.async { self.aktualniPoloha = start }
+
+        debugTimer?.invalidate()
+        debugTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.debugKrok()
+        }
+    }
+
+    private func zastavitDebugSimulaci() {
+        debugTimer?.invalidate()
+        debugTimer = nil
+    }
+
+    private func debugKrok() {
+        guard let soucasna = debugPoloha else { return }
+
+        let finalniCil = CLLocationCoordinate2D(latitude: cilLat, longitude: cilLon)
+        let vzdalenostKFinalnimuCili = spoctiVzdalenost(
+            lat1: soucasna.latitude, lon1: soucasna.longitude,
+            lat2: finalniCil.latitude, lon2: finalniCil.longitude
+        )
+
+        // Cil dosazen - simulaci automaticky zastavime
+        if vzdalenostKFinalnimuCili < 8 {
+            zastavitDebugSimulaci()
+            return
+        }
+
+        // Miri na aktualni krok trasy (turn-by-turn), stejne jako by to delal skutecny ridic
+        let (smerovyBod, _, _) = ziskejAktualniCilovyBod()
+
+        let rychlostMS = (nastaveni?.debugRychlostKmh ?? 40) / 3.6
+        let krokM = rychlostMS * 1.0 // 1 sekundovy tik
+
+        var azimut = spoctiAzimut(
+            lat1: soucasna.latitude, lon1: soucasna.longitude,
+            lat2: smerovyBod.latitude, lon2: smerovyBod.longitude
+        )
+        // Mala nahodna odchylka, aby simulace pripominala realnou jizdu (ne dokonale rovnou caru)
+        azimut += Double.random(in: -6...6)
+
+        let novaPoloha = bodVeSmeru(z: soucasna, azimut: azimut, vzdalenostM: krokM)
+        debugPoloha = novaPoloha
+
+        let simulovanaPoloha = CLLocation(
+            coordinate: novaPoloha,
+            altitude: 0,
+            horizontalAccuracy: 5,
+            verticalAccuracy: 5,
+            course: azimut,
+            speed: rychlostMS,
+            timestamp: Date()
+        )
+
+        DispatchQueue.main.async { self.aktualniPoloha = novaPoloha }
+        vyhodnotPozici(poloha: simulovanaPoloha)
+    }
+
+    // Vypocita novy bod ve vzdalenosti a smeru (azimutu) od daneho bodu
+    // (tzv. "destination point" vzorec, standardni sfericka geometrie)
+    private func bodVeSmeru(z bod: CLLocationCoordinate2D, azimut stupne: Double, vzdalenostM: Double) -> CLLocationCoordinate2D {
+        let R = 6371000.0
+        let brng = stupne * .pi / 180
+        let lat1 = bod.latitude * .pi / 180
+        let lon1 = bod.longitude * .pi / 180
+
+        let lat2 = asin(sin(lat1) * cos(vzdalenostM / R) + cos(lat1) * sin(vzdalenostM / R) * cos(brng))
+        let lon2 = lon1 + atan2(sin(brng) * sin(vzdalenostM / R) * cos(lat1), cos(vzdalenostM / R) - sin(lat1) * sin(lat2))
+
+        return CLLocationCoordinate2D(latitude: lat2 * 180 / .pi, longitude: lon2 * 180 / .pi)
+    }
+    // ================== KONEC DEBUG / SIMULACE ==================
 }
 
 // MARK: - Vyhledavani adres (MapKit nasepta jako Google Maps)
@@ -541,6 +658,7 @@ struct MapaView: UIViewRepresentable {
     var cil: CLLocationCoordinate2D?
     var trasa: [CLLocationCoordinate2D]
     var tmavyRezim: Bool
+    var simulovanaPoloha: CLLocationCoordinate2D? = nil // NOVE: pokud neni nil, zobrazi se misto realne polohy
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -553,6 +671,9 @@ struct MapaView: UIViewRepresentable {
     func updateUIView(_ mapView: MKMapView, context: Context) {
         mapView.overrideUserInterfaceStyle = tmavyRezim ? .dark : .light
 
+        // Pri simulaci skryjeme realnou modrou tecku, aby nedoslo k pomileni se simulovanou polohou
+        mapView.showsUserLocation = (simulovanaPoloha == nil)
+
         let stareAnotace = mapView.annotations.filter { !($0 is MKUserLocation) }
         mapView.removeAnnotations(stareAnotace)
         mapView.removeOverlays(mapView.overlays)
@@ -562,6 +683,14 @@ struct MapaView: UIViewRepresentable {
             pin.coordinate = cil
             pin.title = "Cíl"
             mapView.addAnnotation(pin)
+        }
+
+        if let simPoloha = simulovanaPoloha {
+            let simPin = MKPointAnnotation()
+            simPin.coordinate = simPoloha
+            simPin.title = "SIMULACE"
+            mapView.addAnnotation(simPin)
+            mapView.setCenter(simPoloha, animated: true)
         }
 
         if trasa.count > 1 {
@@ -586,6 +715,17 @@ struct MapaView: UIViewRepresentable {
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard annotation.title == "SIMULACE" else { return nil }
+            let identifier = "simulace_pin"
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
+                ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+            view.annotation = annotation
+            view.markerTintColor = UIColor(Moto.jantar)
+            view.glyphText = "S"
+            return view
         }
     }
 }
@@ -638,6 +778,28 @@ struct NastaveniView: View {
                 } header: {
                     Text("Vzhled appky")
                 }
+
+                // NOVE: Sekce pro testovaci simulaci GPS
+                Section {
+                    Toggle("Simulovat pohyb k cíli", isOn: $nastaveni.debugSimulace)
+
+                    if nastaveni.debugSimulace {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Rychlost simulace")
+                            Slider(value: $nastaveni.debugRychlostKmh, in: 5...120, step: 5)
+                            Text("\(Int(nastaveni.debugRychlostKmh)) km/h")
+                                .foregroundColor(paleta.textTlumeny)
+                        }
+                    }
+                } header: {
+                    Text("Debug / testování")
+                } footer: {
+                    if nastaveni.debugSimulace {
+                        Text("Zapnuto: nejdřív si přes vyhledávání zadej normální cíl. Po stisknutí 'Spustit navigaci' se poloha bude automaticky pohybovat směrem k cíli (po vypočtené trase) místo reálného GPS. Užitečné pro testování displeje ESP32 bez nutnosti reálně jet. V hlavičce appky i na mapě uvidíš žluté označení SIMULACE.")
+                    } else {
+                        Text("Zapni, pokud chceš otestovat displej ESP32 a celý projekt bez reálné jízdy - poloha se bude automaticky posouvat k zadanému cíli.")
+                    }
+                }
             }
             .navigationTitle("Nastavení")
             .toolbar {
@@ -679,6 +841,17 @@ struct ContentView: View {
                             Moto.eyebrow("Moto navigace", paleta)
                         }
                         Spacer()
+                        // NOVE: viditelny stitek, kdyz bezi simulace, aby nedoslo k pomileni s realnou navigaci
+                        if nastaveni.debugSimulace {
+                            Text("SIMULACE")
+                                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                .tracking(0.5)
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Moto.jantar)
+                                .cornerRadius(20)
+                        }
                         StavIndikator(stav: navi.stavPripojeni, paleta: paleta)
                         Button {
                             zobrazNastaveni = true
@@ -784,7 +957,12 @@ struct ContentView: View {
                     MotoPanel(paleta) {
                         VStack(alignment: .leading, spacing: 8) {
                             Moto.eyebrow("Mapa", paleta)
-                            MapaView(cil: cilSouradnice, trasa: trasaBody, tmavyRezim: nastaveni.tmavyRezim)
+                            MapaView(
+                                cil: cilSouradnice,
+                                trasa: trasaBody,
+                                tmavyRezim: nastaveni.tmavyRezim,
+                                simulovanaPoloha: nastaveni.debugSimulace ? navi.aktualniPoloha : nil
+                            )
                                 .frame(height: 260)
                                 .cornerRadius(10)
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(paleta.panelHranice, lineWidth: 1))
