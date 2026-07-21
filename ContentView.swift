@@ -253,6 +253,10 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
 
+    // NOVE: posledni znamy kompasovy heading (magnetometr), pouzity jako fallback,
+    // kdyz GPS-based smer jizdy (course) neni k dispozici (stani, nizka rychlost)
+    private var posledniKompasHeading: Double?
+
     var cilLat: Double = 0
     var cilLon: Double = 0
     var cilNastaven: Bool = false
@@ -272,6 +276,12 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         locationManager.requestAlwaysAuthorization()
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
+
+        // NOVE: spustime i kompas (magnetometr), aby byl heading k dispozici
+        // i kdyz stojime nebo jedeme pomalu a GPS-course neni spolehlivy
+        if CLLocationManager.headingAvailable() {
+            locationManager.startUpdatingHeading()
+        }
     }
 
     // Nastaveni cile bez trasy (fallback - primy smer k cili)
@@ -364,6 +374,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
+    // NOVE: prijem kompasoveho headingu z magnetometru (fallback pro nizkou rychlost/stani)
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        if newHeading.headingAccuracy >= 0 {
+            self.posledniKompasHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        }
+    }
+
     // --- Vypocet, postup po krocich trasy a odeslani ---
     private func vyhodnotPozici(poloha: CLLocation) {
         let myLat = poloha.coordinate.latitude
@@ -384,7 +401,23 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
 
         let vzdalenost = spoctiVzdalenost(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
-        let azimut = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
+        let azimutKCili = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
+
+        // --- NOVE: zohledni aktualni smer jizdy (heading), aby sipka ukazovala
+        //     relativne k tomu, kam se dives/jedes, ne absolutne k severu ---
+        // GPS-based smer jizdy (course) je spolehlivy jen za jizdy (rychlost > ~1 m/s).
+        // Pri stani nebo pomale jizde pouzijeme kompas (magnetometr) jako fallback.
+        let heading: Double
+        if poloha.course >= 0 && poloha.speed > 1.0 {
+            heading = poloha.course
+        } else if let kompas = posledniKompasHeading {
+            heading = kompas
+        } else {
+            heading = 0
+        }
+
+        let relativniUhel = (azimutKCili - heading + 360).truncatingRemainder(dividingBy: 360)
+        // ------------------------------------------------------------------------
 
         // Postup na dalsi krok trasy, kdyz jsme dost blizko a jeste neni posledni krok
         if !kroky.isEmpty, !jePosledniKrok, vzdalenost < 20 {
@@ -402,11 +435,12 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         // Carky v pokynu by rozbily CSV parsovani na ESP32, nahradime strednikem
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        let zprava = "\(Int(azimut)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+        // Posilame relativni uhel (vuci smeru jizdy), ne absolutni azimut k severu!
+        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
-            self.aktualniUhel = Int(azimut)
+            self.aktualniUhel = Int(relativniUhel)
             self.aktualniVzdalenost = vzdText
             self.aktualniCas = hodiny
             self.aktualniPokyn = textPokynu
