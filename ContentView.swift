@@ -102,7 +102,12 @@ class NastaveniManager: ObservableObject {
         didSet { UserDefaults.standard.set(tmavyRezim, forKey: "tmavyRezim") }
     }
 
-    // NOVE: Debug / simulace GPS pro testovani bez realne jizdy
+    // Konfigurovatelny interval odesilani dat v sekundach (0,01 az 2,0 s)
+    @Published var odesilaciInterval: Double {
+        didSet { UserDefaults.standard.set(odesilaciInterval, forKey: "odesilaciInterval") }
+    }
+
+    // Debug / simulace GPS pro testovani bez realne jizdy
     @Published var debugSimulace: Bool {
         didSet { UserDefaults.standard.set(debugSimulace, forKey: "debugSimulace") }
     }
@@ -119,6 +124,7 @@ class NastaveniManager: ObservableObject {
         self.vzdalenostCervena = d.object(forKey: "vzdalenostCervena") as? Double ?? 15
         self.blikaniMod = BlikaniMod(rawValue: d.integer(forKey: "blikaniMod")) ?? .zadne
         self.tmavyRezim = d.object(forKey: "tmavyRezim") as? Bool ?? true
+        self.odesilaciInterval = d.object(forKey: "odesilaciInterval") as? Double ?? 0.2 // Výchozí 200 ms (5 Hz)
         self.debugSimulace = d.object(forKey: "debugSimulace") as? Bool ?? false
         self.debugRychlostKmh = d.object(forKey: "debugRychlostKmh") as? Double ?? 40
     }
@@ -246,7 +252,11 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var writeCharacteristic: CBCharacteristic?
 
     // Odkaz na nastaveni - injektuje ContentView pri vytvoreni
-    var nastaveni: NastaveniManager?
+    var nastaveni: NastaveniManager? {
+        didSet {
+            spustOdesilaciTimer()
+        }
+    }
 
     @Published var stavPripojeni: String = "Odpojeno"
     @Published var poslednaZprava: String = "---"
@@ -263,13 +273,16 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
 
-    // Posledni znamy kompasovy heading (magnetometr), pouzity jako fallback,
-    // kdyz GPS-based smer jizdy (course) neni k dispozici (stani, nizka rychlost)
+    // Posledni znamy kompasovy heading
     private var posledniKompasHeading: Double?
 
-    // NOVE: Debug / simulace GPS pohybu pro testovani bez realne jizdy
+    // Debug / simulace GPS pohybu
     private var debugTimer: Timer?
     private var debugPoloha: CLLocationCoordinate2D?
+
+    // Samostatny TIMER pro odesilani dat do ESP32 v konfigurovatelnem intervalu
+    private var sendTimer: Timer?
+    private var posledniInterval: Double = -1.0
 
     var cilLat: Double = 0
     var cilLon: Double = 0
@@ -291,14 +304,11 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
 
-        // Spustime i kompas (magnetometr), aby byl heading k dispozici
-        // i kdyz stojime nebo jedeme pomalu a GPS-course neni spolehlivy
         if CLLocationManager.headingAvailable() {
             locationManager.startUpdatingHeading()
         }
     }
 
-    // Nastaveni cile bez trasy (fallback - primy smer k cili)
     func nastavCil(lat: Double, lon: Double) {
         cilLat = lat
         cilLon = lon
@@ -307,7 +317,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         aktualniKrokIndex = 0
     }
 
-    // Nastaveni turn-by-turn trasy s kroky z MKDirections
     func nastavTrasu(kroky noveKroky: [MKRoute.Step], cilLat: Double, cilLon: Double) {
         self.kroky = noveKroky.filter { $0.polyline.pointCount > 0 }
         self.aktualniKrokIndex = 0
@@ -321,9 +330,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         centralManager.scanForPeripherals(withServices: [SERVICE_UUID], options: nil)
     }
 
-    // Spusti navigaci - bud realnym GPS, nebo simulaci, pokud je zapnuta v nastaveni
     func spustitNavigaci() {
         aktivni = true
+        spustOdesilaciTimer()
         if nastaveni?.debugSimulace == true {
             locationManager.stopUpdatingLocation()
             spustitDebugSimulaci()
@@ -334,8 +343,38 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     func zastavitNavigaci() {
         aktivni = false
+        zastavOdesilaciTimer()
         locationManager.stopUpdatingLocation()
         zastavitDebugSimulaci()
+    }
+
+    // --- SAMOSTATNÝ TIMER PRO ODESÍLÁNÍ DATA DO ESP32 ---
+    func spustOdesilaciTimer() {
+        guard let nastaveni = nastaveni else { return }
+        
+        // Pokud uz timer bezi se stejnym intervalem, nic nemenime
+        if sendTimer != nil && posledniInterval == nastaveni.odesilaciInterval {
+            return
+        }
+
+        zastavOdesilaciTimer()
+        posledniInterval = nastaveni.odesilaciInterval
+
+        sendTimer = Timer.scheduledTimer(withTimeInterval: nastaveni.odesilaciInterval, repeats: true) { [weak self] _ in
+            self?.odesliAktualniStavDoBLE()
+        }
+    }
+
+    func zastavOdesilaciTimer() {
+        sendTimer?.invalidate()
+        sendTimer = nil
+    }
+
+    private func odesliAktualniStavDoBLE() {
+        guard aktivni, cilNastaven else { return }
+        let zprava = poslednaZprava
+        guard zprava != "---" && !zprava.isEmpty else { return }
+        posliDoBLE(zprava)
     }
 
     // --- CBCentralManagerDelegate ---
@@ -382,10 +421,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     // --- CLLocationManagerDelegate ---
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // Pokud bezi simulace, ignorujeme realne GPS updaty, aby si neprebily
         guard nastaveni?.debugSimulace != true else { return }
-
         guard let poloha = locations.last else { return }
+        
         DispatchQueue.main.async {
             self.aktualniPoloha = poloha.coordinate
         }
@@ -398,14 +436,12 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
-    // Prijem kompasoveho headingu z magnetometru (fallback pro nizkou rychlost/stani)
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         if newHeading.headingAccuracy >= 0 {
             self.posledniKompasHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         }
     }
 
-    // Vraci bod, na ktery se ma prave navigovat (bud aktualni krok trasy, nebo primo cil)
     private func ziskejAktualniCilovyBod() -> (bod: CLLocationCoordinate2D, pokyn: String, posledni: Bool) {
         if !kroky.isEmpty, aktualniKrokIndex < kroky.count {
             let krok = kroky[aktualniKrokIndex]
@@ -418,8 +454,13 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // --- Vypocet, postup po krocich trasy a odeslani ---
+    // --- Vypocet a aktualizace stavu v pameti (bez priameho BLE sendu) ---
     private func vyhodnotPozici(poloha: CLLocation) {
+        // Kontrola, zda se mezitim nezmenil interval v nastaveni
+        if let currentInterval = nastaveni?.odesilaciInterval, currentInterval != posledniInterval {
+            spustOdesilaciTimer()
+        }
+
         let myLat = poloha.coordinate.latitude
         let myLon = poloha.coordinate.longitude
 
@@ -428,10 +469,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         let vzdalenost = spoctiVzdalenost(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
         let azimutKCili = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
 
-        // Zohledni aktualni smer jizdy (heading), aby sipka ukazovala relativne
-        // k tomu, kam se dives/jedes, ne absolutne k severu.
-        // GPS-based smer jizdy (course) je spolehlivy jen za jizdy (rychlost > ~1 m/s).
-        // Pri stani nebo pomale jizde pouzijeme kompas (magnetometr) jako fallback.
         let heading: Double
         if poloha.course >= 0 && poloha.speed > 1.0 {
             heading = poloha.course
@@ -443,7 +480,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
         let relativniUhel = (azimutKCili - heading + 360).truncatingRemainder(dividingBy: 360)
 
-        // Postup na dalsi krok trasy, kdyz jsme dost blizko a jeste neni posledni krok
         if !kroky.isEmpty, !jePosledniKrok, vzdalenost < 20 {
             aktualniKrokIndex += 1
         }
@@ -456,10 +492,8 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         formatter.dateFormat = "HH:mm"
         let hodiny = formatter.string(from: Date())
 
-        // Carky v pokynu by rozbily CSV parsovani na ESP32, nahradime strednikem
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        // Posilame relativni uhel (vuci smeru jizdy), ne absolutni azimut k severu!
         let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
 
         DispatchQueue.main.async {
@@ -470,7 +504,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
             self.aktualniPokyn = textPokynu
             self.aktualniZona = zona
         }
-        posliDoBLE(zprava)
     }
 
     private func posliDoBLE(_ text: String) {
@@ -501,14 +534,8 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         return brng
     }
 
-    // ================== NOVE: DEBUG / SIMULACE GPS ==================
-    // Umoznuje testovat cely projekt (appka + ESP32 displej) bez realne
-    // jizdy - poloha se sama pravidelne posouva smerem k zadanemu cili
-    // po jiz vypoctene trase (pokud existuje), jinak primo k cili.
-
+    // ================== DEBUG / SIMULACE GPS ==================
     private func spustitDebugSimulaci() {
-        // Pocatecni bod: posledni znama realna poloha, jinak nahodny bod
-        // cca 800 m od cile, aby simulace mela co "ujet".
         let start: CLLocationCoordinate2D
         if let znama = aktualniPoloha {
             start = znama
@@ -524,12 +551,12 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         DispatchQueue.main.async { self.aktualniPoloha = start }
 
         debugTimer?.invalidate()
-        debugTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        debugTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             self?.debugKrok()
         }
     }
 
-    private func zastavitDebugSimulaci() {
+    private func zastavirDebugSimulaci() {
         debugTimer?.invalidate()
         debugTimer = nil
     }
@@ -543,24 +570,20 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
             lat2: finalniCil.latitude, lon2: finalniCil.longitude
         )
 
-        // Cil dosazen - simulaci automaticky zastavime
         if vzdalenostKFinalnimuCili < 8 {
-            zastavitDebugSimulaci()
+            zastavirDebugSimulaci()
             return
         }
 
-        // Miri na aktualni krok trasy (turn-by-turn), stejne jako by to delal skutecny ridic
         let (smerovyBod, _, _) = ziskejAktualniCilovyBod()
-
         let rychlostMS = (nastaveni?.debugRychlostKmh ?? 40) / 3.6
-        let krokM = rychlostMS * 1.0 // 1 sekundovy tik
+        let krokM = rychlostMS * 0.2 // tik kazdych 200ms
 
         var azimut = spoctiAzimut(
             lat1: soucasna.latitude, lon1: soucasna.longitude,
             lat2: smerovyBod.latitude, lon2: smerovyBod.longitude
         )
-        // Mala nahodna odchylka, aby simulace pripominala realnou jizdu (ne dokonale rovnou caru)
-        azimut += Double.random(in: -6...6)
+        azimut += Double.random(in: -3...3)
 
         let novaPoloha = bodVeSmeru(z: soucasna, azimut: azimut, vzdalenostM: krokM)
         debugPoloha = novaPoloha
@@ -579,8 +602,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         vyhodnotPozici(poloha: simulovanaPoloha)
     }
 
-    // Vypocita novy bod ve vzdalenosti a smeru (azimutu) od daneho bodu
-    // (tzv. "destination point" vzorec, standardni sfericka geometrie)
     private func bodVeSmeru(z bod: CLLocationCoordinate2D, azimut stupne: Double, vzdalenostM: Double) -> CLLocationCoordinate2D {
         let R = 6371000.0
         let brng = stupne * .pi / 180
@@ -592,10 +613,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
         return CLLocationCoordinate2D(latitude: lat2 * 180 / .pi, longitude: lon2 * 180 / .pi)
     }
-    // ================== KONEC DEBUG / SIMULACE ==================
 }
 
-// MARK: - Vyhledavani adres (MapKit nasepta jako Google Maps)
+// MARK: - Vyhledavani adres
 class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     private let completer = MKLocalSearchCompleter()
     @Published var navrhy: [MKLocalSearchCompletion] = []
@@ -637,7 +657,6 @@ class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     }
 }
 
-// Vraci celou trasu (MKRoute), abychom meli k dispozici jak polyline pro mapu, tak kroky pro turn-by-turn
 func spocitejTrasu(z start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, dokonceni: @escaping (MKRoute?) -> Void) {
     let request = MKDirections.Request()
     request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
@@ -653,12 +672,12 @@ func spocitejTrasu(z start: CLLocationCoordinate2D, do cil: CLLocationCoordinate
     }
 }
 
-// MARK: - Mapa, s bezelem jako palubni displej
+// MARK: - Mapa
 struct MapaView: UIViewRepresentable {
     var cil: CLLocationCoordinate2D?
     var trasa: [CLLocationCoordinate2D]
     var tmavyRezim: Bool
-    var simulovanaPoloha: CLLocationCoordinate2D? = nil // NOVE: pokud neni nil, zobrazi se misto realne polohy
+    var simulovanaPoloha: CLLocationCoordinate2D? = nil
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -670,8 +689,6 @@ struct MapaView: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         mapView.overrideUserInterfaceStyle = tmavyRezim ? .dark : .light
-
-        // Pri simulaci skryjeme realnou modrou tecku, aby nedoslo k pomileni se simulovanou polohou
         mapView.showsUserLocation = (simulovanaPoloha == nil)
 
         let stareAnotace = mapView.annotations.filter { !($0 is MKUserLocation) }
@@ -741,6 +758,24 @@ struct NastaveniView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
+                        Text("Interval odesílání dat do ESP32")
+                        Slider(value: $nastaveni.odesilaciInterval, in: 0.01...2.0, step: 0.01)
+                        HStack {
+                            Text("\(String(format: "%.2f", nastaveni.odesilaciInterval)) s")
+                                .bold()
+                            Spacer()
+                            Text("\(Int(1.0 / nastaveni.odesilaciInterval)) Hz")
+                                .foregroundColor(paleta.textTlumeny)
+                        }
+                    }
+                } header: {
+                    Text("Časovač odesílání (Timer)")
+                } footer: {
+                    Text("Určuje, jak často se posílají nová data přes BLE nezávisle na GPS updatech. (Nízké hodnoty = plynulejší reakce, vyšší = úspora baterie).")
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Zelená zóna (daleko od odbočky)")
                         Slider(value: $nastaveni.vzdalenostZelena, in: 30...400, step: 5)
                         Text("\(Int(nastaveni.vzdalenostZelena)) m")
@@ -779,7 +814,6 @@ struct NastaveniView: View {
                     Text("Vzhled appky")
                 }
 
-                // NOVE: Sekce pro testovaci simulaci GPS
                 Section {
                     Toggle("Simulovat pohyb k cíli", isOn: $nastaveni.debugSimulace)
 
@@ -795,9 +829,9 @@ struct NastaveniView: View {
                     Text("Debug / testování")
                 } footer: {
                     if nastaveni.debugSimulace {
-                        Text("Zapnuto: nejdřív si přes vyhledávání zadej normální cíl. Po stisknutí 'Spustit navigaci' se poloha bude automaticky pohybovat směrem k cíli (po vypočtené trase) místo reálného GPS. Užitečné pro testování displeje ESP32 bez nutnosti reálně jet. V hlavičce appky i na mapě uvidíš žluté označení SIMULACE.")
+                        Text("Zapnuto: nejdřív si přes vyhledávání zadej normální cíl. Po stisknutí 'Spustit navigaci' se poloha bude automaticky pohybovat směrem k cíli (po vypočtené trase) místo reálného GPS.")
                     } else {
-                        Text("Zapni, pokud chceš otestovat displej ESP32 a celý projekt bez reálné jízdy - poloha se bude automaticky posouvat k zadanému cíli.")
+                        Text("Zapni, pokud chceš otestovat displej ESP32 a celý projekt bez reálné jízdy.")
                     }
                 }
             }
@@ -811,7 +845,7 @@ struct NastaveniView: View {
     }
 }
 
-// MARK: - UI
+// MARK: - Hlavni UI
 struct ContentView: View {
     @StateObject private var navi = NaviManager()
     @StateObject private var hledac = AdresyHledac()
@@ -830,248 +864,178 @@ struct ContentView: View {
         ZStack {
             paleta.asfalt.ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 14) {
+            VStack(spacing: 12) {
+                // Horni lišta stavu
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("MOTO NAVI")
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .foregroundColor(paleta.textHlavni)
+                        Text(navi.stavPripojeni)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(navi.stavPripojeni == "SPOJENO" ? Moto.signal : Moto.redline)
+                    }
 
+                    Spacer()
+
+                    Button(action: { navi.pripojitESP32() }) {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .padding(10)
+                            .background(paleta.panel)
+                            .cornerRadius(8)
+                            .foregroundColor(paleta.textHlavni)
+                    }
+
+                    Button(action: { zobrazNastaveni = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .padding(10)
+                            .background(paleta.panel)
+                            .cornerRadius(8)
+                            .foregroundColor(paleta.textHlavni)
+                    }
+                }
+                .padding(.horizontal)
+
+                // Vyhledavaci pole pro cíl
+                VStack {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("BEELINE")
-                                .font(.system(size: 26, weight: .black, design: .rounded))
-                                .foregroundColor(paleta.textHlavni)
-                            Moto.eyebrow("Moto navigace", paleta)
-                        }
-                        Spacer()
-                        // NOVE: viditelny stitek, kdyz bezi simulace, aby nedoslo k pomileni s realnou navigaci
-                        if nastaveni.debugSimulace {
-                            Text("SIMULACE")
-                                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                                .tracking(0.5)
-                                .foregroundColor(.black)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(Moto.jantar)
-                                .cornerRadius(20)
-                        }
-                        StavIndikator(stav: navi.stavPripojeni, paleta: paleta)
-                        Button {
-                            zobrazNastaveni = true
-                        } label: {
-                            Image(systemName: "gearshape.fill")
-                                .font(.system(size: 18))
-                                .foregroundColor(paleta.textTlumeny)
-                                .padding(8)
-                                .background(paleta.panel)
-                                .clipShape(Circle())
-                        }
-                    }
-                    .padding(.top, 8)
-
-                    MotoPanel(paleta) {
-                        VStack(spacing: 10) {
-                            SmerovyUkazatel(
-                                uhel: navi.aktualniUhel,
-                                zona: navi.aktualniZona,
-                                blikaniMod: nastaveni.blikaniMod,
-                                paleta: paleta
-                            )
-
-                            HStack {
-                                VStack(spacing: 2) {
-                                    Moto.eyebrow("Vzdálenost", paleta)
-                                    Text(navi.aktualniVzdalenost)
-                                        .font(.system(size: 22, weight: .bold, design: .monospaced))
-                                        .foregroundColor(paleta.textHlavni)
-                                }
-                                Spacer()
-                                VStack(spacing: 2) {
-                                    Moto.eyebrow("Čas", paleta)
-                                    Text(navi.aktualniCas)
-                                        .font(.system(size: 22, weight: .bold, design: .monospaced))
-                                        .foregroundColor(paleta.textHlavni)
-                                }
-                                Spacer()
-                                VStack(spacing: 2) {
-                                    Moto.eyebrow("Pokyn", paleta)
-                                    Text(navi.aktualniPokyn)
-                                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                                        .foregroundColor(Moto.barvaZony(navi.aktualniZona, paleta))
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.center)
-                                }
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(paleta.textTlumeny)
+                        TextField("Kam chcete jet?", text: $hledaniText)
+                            .foregroundColor(paleta.textHlavni)
+                            .onChange(of: hledaniText) { novyText in
+                                hledac.hledej(novyText)
+                                zobrazNavrhy = !novyText.isEmpty
                             }
-                            .padding(.horizontal, 8)
+                        if !hledaniText.isEmpty {
+                            Button(action: {
+                                hledaniText = ""
+                                zobrazNavrhy = false
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(paleta.textTlumeny)
+                            }
                         }
                     }
+                    .padding(12)
+                    .background(paleta.panel)
+                    .cornerRadius(10)
 
-                    MotoPanel(paleta) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Moto.eyebrow("2 · Vyhledat cíl", paleta)
-
-                            TextField("Zadej město, ulici...", text: $hledaniText)
-                                .font(.system(size: 16, design: .rounded))
-                                .foregroundColor(paleta.textHlavni)
-                                .padding(10)
-                                .background(paleta.asfalt)
-                                .cornerRadius(8)
-                                .onChange(of: hledaniText) { novyText in
-                                    hledac.hledej(novyText)
-                                    zobrazNavrhy = !novyText.isEmpty
-                                }
-
-                            if zobrazNavrhy && !hledac.navrhy.isEmpty {
-                                VStack(alignment: .leading, spacing: 0) {
-                                    ForEach(hledac.navrhy.prefix(5), id: \.self) { navrh in
-                                        Button { vyberNavrh(navrh) } label: {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(navrh.title)
-                                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                                    .foregroundColor(paleta.textHlavni)
-                                                if !navrh.subtitle.isEmpty {
-                                                    Text(navrh.subtitle)
-                                                        .font(.system(size: 12, design: .rounded))
-                                                        .foregroundColor(paleta.textTlumeny)
+                    if zobrazNavrhy && !hledac.navrhy.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(hledac.navrhy, id: \.self) { navrh in
+                                    Button(action: {
+                                        hledac.vyhledejSouradnice(pro: navrh) { coords, název in
+                                            if let coords = coords {
+                                                cilSouradnice = coords
+                                                cilNazev = název
+                                                hledaniText = název
+                                                zobrazNavrhy = false
+                                                
+                                                if let start = navi.aktualniPoloha {
+                                                    spocitejTrasu(z: start, do: coords) { route in
+                                                        if let route = route {
+                                                            let points = route.polyline.points()
+                                                            let count = route.polyline.pointCount
+                                                            var coordsList: [CLLocationCoordinate2D] = []
+                                                            for i in 0..<count {
+                                                                coordsList.append(points[i].coordinate)
+                                                            }
+                                                            trasaBody = coordsList
+                                                            navi.nastavTrasu(kroky: route.steps, cilLat: coords.latitude, cilLon: coords.longitude)
+                                                        } else {
+                                                            navi.nastavCil(lat: coords.latitude, lon: coords.longitude)
+                                                        }
+                                                    }
+                                                } else {
+                                                    navi.nastavCil(lat: coords.latitude, lon: coords.longitude)
                                                 }
                                             }
-                                            .padding(.vertical, 8)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
                                         }
-                                        if navrh != hledac.navrhy.prefix(5).last {
-                                            Divider().background(paleta.panelHranice)
+                                    }) {
+                                        VStack(alignment: .leading) {
+                                            Text(navrh.title)
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundColor(paleta.textHlavni)
+                                            Text(navrh.subtitle)
+                                                .font(.system(size: 12))
+                                                .foregroundColor(paleta.textTlumeny)
                                         }
+                                        .padding(.vertical, 4)
                                     }
-                                }
-                                .padding(.horizontal, 4)
-                            }
-
-                            if !cilNazev.isEmpty {
-                                HStack(spacing: 6) {
-                                    Circle().fill(Moto.signal).frame(width: 8, height: 8)
-                                    Text("Cíl: \(cilNazev)")
-                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                        .foregroundColor(paleta.textTlumeny)
+                                    Divider().background(paleta.panelHranice)
                                 }
                             }
+                            .padding()
                         }
+                        .background(paleta.panel)
+                        .cornerRadius(10)
+                        .frame(maxHeight: 200)
                     }
+                }
+                .padding(.horizontal)
 
-                    MotoPanel(paleta) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Moto.eyebrow("Mapa", paleta)
-                            MapaView(
-                                cil: cilSouradnice,
-                                trasa: trasaBody,
-                                tmavyRezim: nastaveni.tmavyRezim,
-                                simulovanaPoloha: nastaveni.debugSimulace ? navi.aktualniPoloha : nil
-                            )
-                                .frame(height: 260)
-                                .cornerRadius(10)
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(paleta.panelHranice, lineWidth: 1))
-                        }
-                    }
-
-                    VStack(spacing: 10) {
-                        MotoTlacitko(titulek: "Povolit polohu", barva: paleta.textTlumeny, paleta: paleta) {
-                            navi.pozadejOOpravneni()
-                        }
-                        MotoTlacitko(titulek: "1 · Připojit ESP32", barva: Moto.jantar, paleta: paleta) {
-                            navi.pripojitESP32()
-                        }
-                        MotoTlacitko(
-                            titulek: navi.aktivni ? "Zastavit navigaci" : "3 · Spustit navigaci",
-                            barva: navi.aktivni ? Moto.redline : Moto.signal,
-                            paleta: paleta,
-                            action: {
-                                if navi.aktivni {
-                                    navi.zastavitNavigaci()
-                                } else if cilSouradnice != nil {
-                                    navi.spustitNavigaci()
-                                }
-                            },
-                            vypnuto: cilSouradnice == nil && !navi.aktivni
+                // Hlavni náhled: Kompas / Mapa
+                if navi.aktivni {
+                    VStack(spacing: 16) {
+                        SmerovyUkazatel(
+                            uhel: navi.aktualniUhel,
+                            zona: navi.aktualniZona,
+                            blikaniMod: nastaveni.blikaniMod,
+                            paleta: paleta
                         )
-                    }
 
-                    MotoPanel(paleta) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Moto.eyebrow("Odesláno přes BLE", paleta)
-                            Text(navi.poslednaZprava)
-                                .font(.system(size: 13, design: .monospaced))
-                                .foregroundColor(paleta.textTlumeny)
+                        VStack(spacing: 4) {
+                            Text(navi.aktualniVzdalenost)
+                                .font(.system(size: 36, weight: .black, design: .rounded))
+                                .foregroundColor(Moto.barvaZony(navi.aktualniZona, paleta))
+                            Text(navi.aktualniPokyn)
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(paleta.textHlavni)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                } else {
+                    MapaView(
+                        cil: cilSouradnice,
+                        trasa: trasaBody,
+                        tmavyRezim: nastaveni.tmavyRezim,
+                        simulovanaPoloha: nastaveni.debugSimulace ? navi.aktualniPoloha : nil
+                    )
+                    .cornerRadius(16)
+                    .padding(.horizontal)
+                    .frame(maxHeight: .infinity)
+                }
+
+                // Spodní tlačítko Start / Stop
+                VStack {
+                    if navi.aktivni {
+                        MotoTlacitko(titulek: "Zastavit navigaci", barva: Moto.redline, paleta: paleta) {
+                            navi.zastavitNavigaci()
+                        }
+                    } else {
+                        MotoTlacitko(
+                            titulek: "Spustit navigaci",
+                            barva: Moto.signal,
+                            paleta: paleta,
+                            vypnuto: !navi.cilNastaven
+                        ) {
+                            navi.spustitNavigaci()
                         }
                     }
                 }
-                .padding(16)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
             }
         }
-        .preferredColorScheme(nastaveni.tmavyRezim ? .dark : .light)
         .onAppear {
             navi.nastaveni = nastaveni
             navi.pozadejOOpravneni()
         }
         .sheet(isPresented: $zobrazNastaveni) {
             NastaveniView(nastaveni: nastaveni)
-        }
-    }
-
-    private func vyberNavrh(_ navrh: MKLocalSearchCompletion) {
-        hledac.vyhledejSouradnice(pro: navrh) { souradnice, nazev in
-            guard let souradnice = souradnice else { return }
-            hledaniText = nazev
-            cilNazev = nazev
-            zobrazNavrhy = false
-            cilSouradnice = souradnice
-
-            // Fallback - primy smer k cili, kdyby se trasa nepodarila spocitat
-            navi.nastavCil(lat: souradnice.latitude, lon: souradnice.longitude)
-
-            guard let start = navi.aktualniPoloha else { return }
-            spocitejTrasu(z: start, do: souradnice) { route in
-                guard let route = route else { return }
-
-                let pocetBodu = route.polyline.pointCount
-                var body = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: pocetBodu)
-                route.polyline.getCoordinates(&body, range: NSRange(location: 0, length: pocetBodu))
-                trasaBody = body
-
-                navi.nastavTrasu(kroky: route.steps, cilLat: souradnice.latitude, cilLon: souradnice.longitude)
-            }
-        }
-    }
-}
-
-struct StavIndikator: View {
-    let stav: String
-    let paleta: MotoPaleta
-
-    var barva: Color {
-        switch stav {
-        case "SPOJENO": return Moto.signal
-        case "Odpojeno": return paleta.textTlumeny
-        default: return Moto.jantar
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(barva).frame(width: 9, height: 9)
-            Text(stav.uppercased())
-                .font(.system(size: 12, weight: .heavy, design: .rounded))
-                .tracking(0.5)
-                .foregroundColor(barva)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(paleta.panel)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(paleta.panelHranice, lineWidth: 1))
-        .cornerRadius(20)
-    }
-}
-
-@main
-struct BeelineNaviApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
         }
     }
 }
