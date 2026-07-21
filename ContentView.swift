@@ -3,7 +3,7 @@ import CoreLocation
 import CoreBluetooth
 import MapKit
 
-// MARK: - UUID musi presne sedet s ESP32 kodem (BeelinePrototyp_ESP32S3.ino)
+// MARK: - UUID musí přesně sedět s ESP32 kódem
 let SERVICE_UUID = CBUUID(string: "4fafc201-1fb5-459e-8fcc-c5c9c331914b")
 let CHARACTERISTIC_UUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b26a8")
 
@@ -20,7 +20,7 @@ extension Color {
     }
 }
 
-// MARK: - Paleta (tmava / svetla), akcentove barvy zustavaji stejne v obou rezimech
+// MARK: - Paleta (tmavá / světlá)
 struct MotoPaleta {
     let asfalt: Color
     let panel: Color
@@ -57,7 +57,6 @@ enum Moto {
             .foregroundColor(paleta.textTlumeny)
     }
 
-    // Barva podle navigacni zony: 0 normalni, 1 zelena, 2 oranzova, 3 cervena
     static func barvaZony(_ zona: Int, _ paleta: MotoPaleta) -> Color {
         switch zona {
         case 1: return signal
@@ -68,7 +67,7 @@ enum Moto {
     }
 }
 
-// MARK: - Nastaveni (uklada se do UserDefaults, zadny prekompilovani netreba)
+// MARK: - Nastavení
 enum BlikaniMod: Int, CaseIterable, Identifiable {
     case zadne = 0
     case sipka = 1
@@ -101,13 +100,9 @@ class NastaveniManager: ObservableObject {
     @Published var tmavyRezim: Bool {
         didSet { UserDefaults.standard.set(tmavyRezim, forKey: "tmavyRezim") }
     }
-
-    // Konfigurovatelny interval odesilani dat v sekundach (0,01 az 2,0 s)
     @Published var odesilaciInterval: Double {
         didSet { UserDefaults.standard.set(odesilaciInterval, forKey: "odesilaciInterval") }
     }
-
-    // Debug / simulace GPS pro testovani bez realne jizdy
     @Published var debugSimulace: Bool {
         didSet { UserDefaults.standard.set(debugSimulace, forKey: "debugSimulace") }
     }
@@ -124,12 +119,11 @@ class NastaveniManager: ObservableObject {
         self.vzdalenostCervena = d.object(forKey: "vzdalenostCervena") as? Double ?? 15
         self.blikaniMod = BlikaniMod(rawValue: d.integer(forKey: "blikaniMod")) ?? .zadne
         self.tmavyRezim = d.object(forKey: "tmavyRezim") as? Bool ?? true
-        self.odesilaciInterval = d.object(forKey: "odesilaciInterval") as? Double ?? 0.2 // Výchozí 200 ms (5 Hz)
+        self.odesilaciInterval = d.object(forKey: "odesilaciInterval") as? Double ?? 0.2
         self.debugSimulace = d.object(forKey: "debugSimulace") as? Bool ?? false
         self.debugRychlostKmh = d.object(forKey: "debugRychlostKmh") as? Double ?? 40
     }
 
-    // Vypocita zonu (0-3) podle vzdalenosti v metrech
     func zonaProVzdalenost(_ metry: Double) -> Int {
         if metry <= vzdalenostCervena { return 3 }
         if metry <= vzdalenostOranzova { return 2 }
@@ -138,7 +132,7 @@ class NastaveniManager: ObservableObject {
     }
 }
 
-// MARK: - Opakovane pouzivane UI kousky
+// MARK: - Opakovaně používané UI prvky
 struct MotoPanel<Content: View>: View {
     let paleta: MotoPaleta
     let content: Content
@@ -159,8 +153,8 @@ struct MotoTlacitko: View {
     let titulek: String
     let barva: Color
     let paleta: MotoPaleta
-    let action: () -> Void
     var vypnuto: Bool = false
+    let action: () -> Void // 'action' posunut na konec pro správnou funkci trailing closure
 
     var body: some View {
         Button(action: action) {
@@ -177,7 +171,7 @@ struct MotoTlacitko: View {
     }
 }
 
-// MARK: - Kruhovy smerovy ukazatel s blikanim podle nastaveni
+// MARK: - Směrový ukazatel
 struct SmerovyUkazatel: View {
     var uhel: Int
     var zona: Int
@@ -235,7 +229,7 @@ struct SipkaTvar: Shape {
     }
 }
 
-// MARK: - Pomocna extension pro ziskani "manevrovaciho" bodu z MKRoute.Step
+// MARK: - Extension pro zisk prvniho bodu z MKPolyline
 extension MKPolyline {
     var prvniBod: CLLocationCoordinate2D {
         guard pointCount > 0 else { return coordinate }
@@ -524,7 +518,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         return brng
     }
 
-    // ================== DEBUG / SIMULACE GPS ==================
+    // --- DEBUG / SIMULACE GPS ---
     private func spustitDebugSimulaci() {
         let start: CLLocationCoordinate2D
         if let znama = aktualniPoloha {
@@ -546,7 +540,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    private func zastavitDebugSimulaci() { // Opraven název (vyměněno 'r' za 't')
+    private func zastavitDebugSimulaci() {
         debugTimer?.invalidate()
         debugTimer = nil
     }
@@ -605,7 +599,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     }
 }
 
-// MARK: - Vyhledavani adres
+// MARK: - Vyhledávání adres
 class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     private let completer = MKLocalSearchCompleter()
     @Published var navrhy: [MKLocalSearchCompletion] = []
@@ -737,7 +731,7 @@ struct MapaView: UIViewRepresentable {
     }
 }
 
-// MARK: - Nastaveni obrazovka
+// MARK: - Nastavení obrazovka
 struct NastaveniView: View {
     @ObservedObject var nastaveni: NastaveniManager
     @Environment(\.dismiss) private var dismiss
@@ -835,7 +829,7 @@ struct NastaveniView: View {
     }
 }
 
-// MARK: - Hlavni UI
+// MARK: - Hlavní UI
 struct ContentView: View {
     @StateObject private var navi = NaviManager()
     @StateObject private var hledac = AdresyHledac()
@@ -855,7 +849,7 @@ struct ContentView: View {
             paleta.asfalt.ignoresSafeArea()
 
             VStack(spacing: 12) {
-                // Horni lišta stavu
+                // Horní lišta
                 HStack {
                     VStack(alignment: .leading) {
                         Text("MOTO NAVI")
@@ -886,14 +880,14 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
 
-                // Vyhledavaci pole pro cíl
+                // Vyhledávací pole
                 VStack {
                     HStack {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(paleta.textTlumeny)
                         TextField("Kam chcete jet?", text: $hledaniText)
                             .foregroundColor(paleta.textHlavni)
-                            .onChange(of: hledaniText) { _, novyText in // Opravená iOS 17+ syntaxe
+                            .onChange(of: hledaniText) { novyText in // Opraveno na iOS 16.0+ syntaxi
                                 hledac.hledej(novyText)
                                 zobrazNavrhy = !novyText.isEmpty
                             }
@@ -966,7 +960,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
 
-                // Náhled kompasu nebo mapy
+                // Náhled kompasu / mapy
                 if navi.aktivni {
                     VStack(spacing: 16) {
                         SmerovyUkazatel(
@@ -1002,7 +996,11 @@ struct ContentView: View {
                 // Tlačítko Start / Stop
                 VStack {
                     if navi.aktivni {
-                        MotoTlacitko(titulek: "Zastavit navigaci", barva: Moto.redline, paleta: paleta) {
+                        MotoTlacitko(
+                            titulek: "Zastavit navigaci",
+                            barva: Moto.redline,
+                            paleta: paleta
+                        ) {
                             navi.zastavitNavigaci()
                         }
                     } else {
