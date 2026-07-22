@@ -465,18 +465,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return vysledek
         }
 
-    private func interpolujBody(od start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, pocetKroku: Int) -> [CLLocationCoordinate2D] {
-        guard pocetKroku > 0 else { return [start, cil] }
-        var vysledek: [CLLocationCoordinate2D] = []
-        for i in 0...pocetKroku {
-            let t = Double(i) / Double(pocetKroku)
-            let lat = start.latitude + (cil.latitude - start.latitude) * t
-            let lon = start.longitude + (cil.longitude - start.longitude) * t
-            vysledek.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
-        }
-        return vysledek
-    }
-
     // --- CBCentralManagerDelegate ---
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
@@ -694,6 +682,7 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return brng
     }
 
+}
 
 // MARK: - Vyhledavani adres (MapKit nasepta jako Google Maps)
 class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
