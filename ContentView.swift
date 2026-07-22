@@ -465,33 +465,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return vysledek
         }
 
-
-    func zastavitSimulaci() {
-        simulaceAktivni = false
-        aktivni = false
-        simulaceTimer?.invalidate()
-        simulaceTimer = nil
-    }
-
-    private func krokSimulace() {
-        guard simulaceIndex < simulaceBody.count else {
-            zastavitSimulaci()
-            return
-        }
-        let bod = simulaceBody[simulaceIndex]
-        simulaceIndex += 1
-
-        // Male nahodne "chveni" polohy - simuluje realny GPS sum a rovnou otestuje filtr
-        let sumLat = Double.random(in: -0.00003...0.00003)
-        let sumLon = Double.random(in: -0.00003...0.00003)
-        let simPoloha = CLLocation(latitude: bod.latitude + sumLat, longitude: bod.longitude + sumLon)
-
-        DispatchQueue.main.async {
-            self.aktualniPoloha = simPoloha.coordinate
-        }
-        vyhodnotPozici(poloha: simPoloha)
-    }
-
     private func interpolujBody(od start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, pocetKroku: Int) -> [CLLocationCoordinate2D] {
         guard pocetKroku > 0 else { return [start, cil] }
         var vysledek: [CLLocationCoordinate2D] = []
