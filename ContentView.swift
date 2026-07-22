@@ -466,50 +466,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
     }
 }
 
-// Vezme body trasy a v prostredni tretine je vyboulí kolmo na smer jizdy,
-// aby spolehlive prekrocily odchylkaLimit a spustily automaticky prepocet.
-private func vyboulenaTrasa(_ body: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
-    guard body.count > 5 else { return body }
-
-    let start = body.count / 3
-    let konec = (body.count * 2) / 3
-    guard konec > start else { return body }
-
-    var vysledek = body
-    let maxVychylkaMetru = 90.0
-
-    for i in start...konec {
-        let t = Double(i - start) / Double(konec - start)
-        // Sinusovy prubeh 0 -> 1 -> 0, aby se trasa plynule vyboulila a zase vratila
-        let sila = sin(t * .pi) * maxVychylkaMetru
-
-        // Smer kolmy na useku trasy v danem bode (jednoducha aproximace)
-        let predchozi = body[max(0, i - 1)]
-        let dalsi = body[min(body.count - 1, i + 1)]
-        let dx = dalsi.longitude - predchozi.longitude
-        let dy = dalsi.latitude - predchozi.latitude
-        let delka = sqrt(dx * dx + dy * dy)
-        guard delka > 0 else { continue }
-
-        // Kolmy smer (otoceny o 90 stupnu)
-        let kolmX = -dy / delka
-        let kolmY = dx / delka
-
-        let refLat = body[i].latitude * .pi / 180
-        let metryNaStupenLat = 111_320.0
-        let metryNaStupenLon = 111_320.0 * cos(refLat)
-
-        let posunLat = (kolmY * sila) / metryNaStupenLat
-        let posunLon = (kolmX * sila) / metryNaStupenLon
-
-        vysledek[i] = CLLocationCoordinate2D(
-            latitude: body[i].latitude + posunLat,
-            longitude: body[i].longitude + posunLon
-        )
-    }
-    return vysledek
-}
-
     func zastavitSimulaci() {
         simulaceAktivni = false
         aktivni = false
