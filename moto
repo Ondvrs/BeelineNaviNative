@@ -764,7 +764,7 @@ private func vyboulenaTrasa(_ body: [CLLocationCoordinate2D]) -> [CLLocationCoor
         brng = (brng + 360).truncatingRemainder(dividingBy: 360)
         return brng
     }
-}
+
 
 // MARK: - Vyhledavani adres (MapKit nasepta jako Google Maps)
 class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
@@ -1129,8 +1129,9 @@ struct ContentView: View {
                                 } else if cilSouradnice != nil {
                                     navi.spustitSimulaci(pocatecniPoloha: navi.aktualniPoloha)
                                 }
-                        
                             },
+                            vypnuto: cilSouradnice == nil && !navi.simulaceAktivni
+                        )
                         Toggle(isOn: Binding(
                             get: { navi.simulujOdchylku },
                             set: { navi.simulujOdchylku = $0 }
@@ -1141,8 +1142,6 @@ struct ContentView: View {
                         }
                         .tint(Moto.jantar)
                         .padding(.horizontal, 4)
-                            vypnuto: cilSouradnice == nil && !navi.simulaceAktivni
-                        )
                     }
 
                     MotoPanel(paleta) {
