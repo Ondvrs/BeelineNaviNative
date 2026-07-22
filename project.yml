@@ -12,6 +12,7 @@ targets:
           - "project.yml"
           - "README.md"
           - ".github/**"
+          - ".git/**"
     info:
       path: Info.plist
       properties:
