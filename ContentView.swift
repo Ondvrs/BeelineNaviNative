@@ -463,7 +463,7 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             )
         }
         return vysledek
-    }
+        }
 
 
     func zastavitSimulaci() {
