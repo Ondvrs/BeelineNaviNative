@@ -218,6 +218,97 @@ struct SipkaTvar: Shape {
         return p
     }
 }
+// MARK: - Tvar pro ikonu kruhoveho objezdu (stejny princip jako SipkaTvar)
+// uhelVyjezdu: pozice vyjezdu na kruznici ve stupnich (matematicka konvence)
+//   0°   = vpravo  (1. vyjezd)
+//   90°  = nahore  (2. vyjezd / rovne)
+//   180° = vlevo   (3. vyjezd)
+//   270° = dole    (otocka - temer plny kruh zpet)
+// Vjezd je vzdy pevne dole (270°), auto "prijizdi" zespodu nahoru do objezdu.
+struct KruhovyObjezdTvar: Shape {
+    var uhelVyjezdu: Double
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let stred = CGPoint(x: rect.midX, y: rect.midY)
+        let polomer = min(rect.width, rect.height) * 0.28
+
+        let vjezdRad = CGFloat(270 * .pi / 180)
+        let vyjezdRad = CGFloat(uhelVyjezdu * .pi / 180)
+
+        // Vjezdova usecka - od spodniho okraje ramecku do kruznice
+        let vjezdBod = CGPoint(
+            x: stred.x + polomer * cos(vjezdRad),
+            y: stred.y - polomer * sin(vjezdRad)
+        )
+        p.move(to: CGPoint(x: stred.x, y: rect.maxY))
+        p.addLine(to: vjezdBod)
+
+        // Oblouk uvnitr objezdu od vjezdu k vyjezdu (proti smeru hod. rucicek = kladny matematicky smer)
+        p.addArc(
+            center: stred,
+            radius: polomer,
+            startAngle: .radians(Double(vjezdRad)),
+            endAngle: .radians(Double(vyjezdRad)),
+            clockwise: false
+        )
+
+        return p
+    }
+
+    // Bod a smer (ve stupnich pro rotaci SipkaTvar) na konci vyjezdove usecky - pro pripojeni hrotu sipky
+    func vyjezdovyBodASmer(v rect: CGRect) -> (bod: CGPoint, smer: Double) {
+        let stred = CGPoint(x: rect.midX, y: rect.midY)
+        let polomer = min(rect.width, rect.height) * 0.28
+        let vyjezdRad = CGFloat(uhelVyjezdu * .pi / 180)
+        let bod = CGPoint(
+            x: stred.x + polomer * cos(vyjezdRad),
+            y: stred.y - polomer * sin(vyjezdRad)
+        )
+        // Prevod na "kompasovy" uhel pro rotationEffect (0° = nahoru, po smeru hod. rucicek)
+        let kompas = (90 - uhelVyjezdu).truncatingRemainder(dividingBy: 360)
+        return (bod, kompas)
+    }
+}
+
+// MARK: - Slozena ikona objezdu (kruh + zvyraznena trasa + hrot sipky), stejny princip jako SmerovyUkazatel
+struct ObjezdIkona: View {
+    var uhelVyjezdu: Double
+    var barvaAktivni: Color
+    var barvaPozadi: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(barvaPozadi, lineWidth: 3)
+                .frame(width: 44, height: 44)
+
+            KruhovyObjezdTvar(uhelVyjezdu: uhelVyjezdu)
+                .stroke(barvaAktivni, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .frame(width: 64, height: 64)
+
+            SipkaTvar()
+                .fill(barvaAktivni)
+                .frame(width: 14, height: 20)
+                .rotationEffect(.degrees(vyjezdSmer))
+                .offset(vyjezdOffset)
+        }
+        .frame(width: 64, height: 64)
+    }
+
+    private var vyjezdSmer: Double {
+        KruhovyObjezdTvar(uhelVyjezdu: uhelVyjezdu).vyjezdovyBodASmer(v: CGRect(x: 0, y: 0, width: 64, height: 64)).smer
+    }
+
+    private var vyjezdOffset: CGSize {
+        let bod = KruhovyObjezdTvar(uhelVyjezdu: uhelVyjezdu).vyjezdovyBodASmer(v: CGRect(x: 0, y: 0, width: 64, height: 64)).bod
+        return CGSize(width: bod.x - 32, height: bod.y - 32)
+    }
+}
+
+ObjezdIkona(uhelVyjezdu: 0,   barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 1. vyjezd
+ObjezdIkona(uhelVyjezdu: 90,  barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 2. vyjezd / rovne
+ObjezdIkona(uhelVyjezdu: 180, barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 3. vyjezd
 
 // MARK: - Pomocna extension pro ziskani "manevrovaciho" bodu z MKRoute.Step
 extension MKPolyline {
