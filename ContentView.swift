@@ -258,6 +258,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     // MARK: Simulacni rezim (testovani bez GPS/ESP32)
     @Published var simulaceAktivni: Bool = false
+    @Published var simulujOdchylku: Bool = false
 
     // MARK: Prepocitavani trasy po odbočení mimo ni
     @Published var prepocitavamTrasu: Bool = false
@@ -326,9 +327,25 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         self.odchylkaPocet = 0
         self.azimutHistorie = []
     }
+private let poslednizesp32Klic = "posledniESP32Identifier"
 
     func pripojitESP32() {
         stavPripojeni = "Hledam ESP32..."
+        zkusChytreConnect()
+    }
+
+    private func zkusChytreConnect() {
+        if let ulozeneID = UserDefaults.standard.string(forKey: poslednizesp32Klic),
+           let uuid = UUID(uuidString: ulozeneID) {
+            let znama = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+            if let zarizeni = znama.first {
+                esp32Peripheral = zarizeni
+                esp32Peripheral?.delegate = self
+                centralManager.connect(zarizeni, options: nil)
+                stavPripojeni = "Pripojuji se (znama zarizeni)..."
+                return
+            }
+        }
         centralManager.scanForPeripherals(withServices: [SERVICE_UUID], options: nil)
     }
 
@@ -345,23 +362,24 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // MARK: - Testovaci simulace pohybu (bez GPS, ideal pro ladeni na stole)
+// MARK: - Testovaci simulace pohybu (bez GPS, ideal pro ladeni na stole)
     func spustitSimulaci(pocatecniPoloha: CLLocationCoordinate2D?) {
         guard cilNastaven else { return }
         simulaceAktivni = true
         aktivni = true
 
         if !vsechnyBodyTrasy.isEmpty {
-            simulaceBody = vsechnyBodyTrasy
+            simulaceBody = simulujOdchylku ? vyboulenaTrasa(vsechnyBodyTrasy) : vsechnyBodyTrasy
         } else {
             let start = pocatecniPoloha ?? CLLocationCoordinate2D(
                 latitude: cilLat - 0.01, longitude: cilLon - 0.01
             )
-            simulaceBody = interpolujBody(
+            let primaTrasa = interpolujBody(
                 od: start,
                 do: CLLocationCoordinate2D(latitude: cilLat, longitude: cilLon),
                 pocetKroku: 60
             )
+            simulaceBody = simulujOdchylku ? vyboulenaTrasa(primaTrasa) : primaTrasa
         }
         simulaceIndex = 0
 
@@ -370,6 +388,127 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
             self?.krokSimulace()
         }
     }
+
+    func zastavitSimulaci() {
+        simulaceAktivni = false
+        aktivni = false
+        simulaceTimer?.invalidate()
+        simulaceTimer = nil
+    }
+
+    private func krokSimulace() {
+        guard simulaceIndex < simulaceBody.count else {
+            zastavitSimulaci()
+            return
+        }
+        let bod = simulaceBody[simulaceIndex]
+        simulaceIndex += 1
+
+        let sumLat = Double.random(in: -0.00003...0.00003)
+        let sumLon = Double.random(in: -0.00003...0.00003)
+        let simPoloha = CLLocation(latitude: bod.latitude + sumLat, longitude: bod.longitude + sumLon)
+
+        DispatchQueue.main.async {
+            self.aktualniPoloha = simPoloha.coordinate
+        }
+        vyhodnotPozici(poloha: simPoloha)
+    }
+
+    private func interpolujBody(od start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, pocetKroku: Int) -> [CLLocationCoordinate2D] {
+        guard pocetKroku > 0 else { return [start, cil] }
+        var vysledek: [CLLocationCoordinate2D] = []
+        for i in 0...pocetKroku {
+            let t = Double(i) / Double(pocetKroku)
+            let lat = start.latitude + (cil.latitude - start.latitude) * t
+            let lon = start.longitude + (cil.longitude - start.longitude) * t
+            vysledek.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+        }
+        return vysledek
+    }
+
+    // Vyboulí prostredni tretinu trasy kolmo do strany, aby spolehlive prekrocila odchylkaLimit
+    private func vyboulenaTrasa(_ body: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        guard body.count > 5 else { return body }
+        let start = body.count / 3
+        let konec = (body.count * 2) / 3
+        guard konec > start else { return body }
+
+        var vysledek = body
+        let maxVychylkaMetru = 90.0
+
+        for i in start...konec {
+            let t = Double(i - start) / Double(konec - start)
+            let sila = sin(t * .pi) * maxVychylkaMetru
+
+            let predchozi = body[max(0, i - 1)]
+            let dalsi = body[min(body.count - 1, i + 1)]
+            let dx = dalsi.longitude - predchozi.longitude
+            let dy = dalsi.latitude - predchozi.latitude
+            let delka = sqrt(dx * dx + dy * dy)
+            guard delka > 0 else { continue }
+
+            let kolmX = -dy / delka
+            let kolmY = dx / delka
+
+            let refLat = body[i].latitude * .pi / 180
+            let metryNaStupenLat = 111_320.0
+            let metryNaStupenLon = 111_320.0 * cos(refLat)
+
+            let posunLat = (kolmY * sila) / metryNaStupenLat
+            let posunLon = (kolmX * sila) / metryNaStupenLon
+
+            vysledek[i] = CLLocationCoordinate2D(
+                latitude: body[i].latitude + posunLat,
+                longitude: body[i].longitude + posunLon
+            )
+        }
+        return vysledek
+    }
+}
+
+// Vezme body trasy a v prostredni tretine je vyboulí kolmo na smer jizdy,
+// aby spolehlive prekrocily odchylkaLimit a spustily automaticky prepocet.
+private func vyboulenaTrasa(_ body: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+    guard body.count > 5 else { return body }
+
+    let start = body.count / 3
+    let konec = (body.count * 2) / 3
+    guard konec > start else { return body }
+
+    var vysledek = body
+    let maxVychylkaMetru = 90.0
+
+    for i in start...konec {
+        let t = Double(i - start) / Double(konec - start)
+        // Sinusovy prubeh 0 -> 1 -> 0, aby se trasa plynule vyboulila a zase vratila
+        let sila = sin(t * .pi) * maxVychylkaMetru
+
+        // Smer kolmy na useku trasy v danem bode (jednoducha aproximace)
+        let predchozi = body[max(0, i - 1)]
+        let dalsi = body[min(body.count - 1, i + 1)]
+        let dx = dalsi.longitude - predchozi.longitude
+        let dy = dalsi.latitude - predchozi.latitude
+        let delka = sqrt(dx * dx + dy * dy)
+        guard delka > 0 else { continue }
+
+        // Kolmy smer (otoceny o 90 stupnu)
+        let kolmX = -dy / delka
+        let kolmY = dx / delka
+
+        let refLat = body[i].latitude * .pi / 180
+        let metryNaStupenLat = 111_320.0
+        let metryNaStupenLon = 111_320.0 * cos(refLat)
+
+        let posunLat = (kolmY * sila) / metryNaStupenLat
+        let posunLon = (kolmX * sila) / metryNaStupenLon
+
+        vysledek[i] = CLLocationCoordinate2D(
+            latitude: body[i].latitude + posunLat,
+            longitude: body[i].longitude + posunLon
+        )
+    }
+    return vysledek
+}
 
     func zastavitSimulaci() {
         simulaceAktivni = false
@@ -413,6 +552,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
             print("Bluetooth je zapnuty.")
+            zkusChytreConnect()
         }
     }
 
@@ -426,13 +566,16 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         stavPripojeni = "Pripojeno, hledam sluzbu..."
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: poslednizesp32Klic)
         peripheral.discoverServices([SERVICE_UUID])
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stavPripojeni = "Odpojeno"
         writeCharacteristic = nil
-        centralManager.scanForPeripherals(withServices: [SERVICE_UUID], options: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.zkusChytreConnect()
+        }
     }
 
     // --- CBPeripheralDelegate ---
@@ -986,7 +1129,18 @@ struct ContentView: View {
                                 } else if cilSouradnice != nil {
                                     navi.spustitSimulaci(pocatecniPoloha: navi.aktualniPoloha)
                                 }
+                        
                             },
+                        Toggle(isOn: Binding(
+                            get: { navi.simulujOdchylku },
+                            set: { navi.simulujOdchylku = $0 }
+                        )) {
+                            Text("Simulovat sjetí z trasy")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(paleta.textHlavni)
+                        }
+                        .tint(Moto.jantar)
+                        .padding(.horizontal, 4)
                             vypnuto: cilSouradnice == nil && !navi.simulaceAktivni
                         )
                     }
