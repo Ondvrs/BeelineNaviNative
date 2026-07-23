@@ -520,25 +520,34 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // MARK: - Detekce kruhového objezdu z instrukce
-    private func detekujKruhacAParsujUhel(instrukce: String) -> (jeKruhac: Bool, uhel: Double) {
-        let text = instrukce.lowercased()
-        
-        guard text.contains("kruh") || text.contains("roundabout") || text.contains("objezd") else {
-            return (false, 90)
-        }
-        
-        if text.contains("1.") || text.contains("1st") || text.contains("první") || text.contains("prvním") {
-            return (true, 0)    // 1. výjezd = vpravo (0°)
-        } else if text.contains("2.") || text.contains("2nd") || text.contains("druhý") || text.contains("druhým") {
-            return (true, 90)   // 2. výjezd = rovně (90°)
-        } else if text.contains("3.") || text.contains("3rd") || text.contains("třetí") || text.contains("třetím") {
-            return (true, 180)  // 3. výjezd = vlevo (180°)
-        } else if text.contains("4.") || text.contains("4th") || text.contains("čtvrtý") || text.contains("čtvrtým") {
-            return (true, 270)  // 4. výjezd = otočení do protisměru (270°)
-        }
-        
-        return (true, 90)
+    // MARK: - Detekce kruhového objezdu a výpočet reálného úhlu výjezdu z geometrie kroku
+    // Nezávisí na textu instrukce (jazyk, slovosled, počet výjezdů) - počítá se
+    // ze skutečného tvaru polyline daného kroku: smer pri vjezdu vs smer pri vyjezdu.
+    private func detekujKruhacAParsujUhel(krok: MKRoute.Step) -> (jeKruhac: Bool, uhel: Double) {
+        let text = krok.instructions.lowercased()
+        let jeKruhac = text.contains("kruh") || text.contains("roundabout") || text.contains("objezd") || text.contains("circle")
+        guard jeKruhac else { return (false, 90) }
+
+        let body = krok.polyline.vsechnyBody
+        guard body.count >= 3 else { return (true, 90) }
+
+        // Smer pri vjezdu (prvni usek) a pri vyjezdu (posledni usek) z arku kroku
+        let vjezdBearing = spoctiAzimut(lat1: body[0].latitude, lon1: body[0].longitude,
+                                         lat2: body[1].latitude, lon2: body[1].longitude)
+        let vyjezdBearing = spoctiAzimut(lat1: body[body.count - 2].latitude, lon1: body[body.count - 2].longitude,
+                                          lat2: body[body.count - 1].latitude, lon2: body[body.count - 1].longitude)
+
+        // Relativni odbocka: 0 = rovne, 90 = vpravo, 180 = otocka, 270 = vlevo (ve smeru hod. rucicek)
+        var relativniOdbocka = vyjezdBearing - vjezdBearing
+        relativniOdbocka = relativniOdbocka.truncatingRemainder(dividingBy: 360)
+        if relativniOdbocka < 0 { relativniOdbocka += 360 }
+
+        // Prevod na uhelVyjezdu pro KruhovyObjezdTvar (0=vpravo,90=nahore,180=vlevo,270=dole)
+        var uhelVyjezdu = 90 - relativniOdbocka
+        uhelVyjezdu = uhelVyjezdu.truncatingRemainder(dividingBy: 360)
+        if uhelVyjezdu < 0 { uhelVyjezdu += 360 }
+
+        return (true, uhelVyjezdu)
     }
 
     // MARK: - Testovací simulace pohybu
@@ -898,10 +907,16 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+        // Detekce zda jde o kruhový objezd - realny uhel se pocita z geometrie kroku, ne z textu
+        let jeKruhovy: Bool
+        let uhelKruhace: Double
+        if !kroky.isEmpty, aktualniKrokIndex < kroky.count {
+            (jeKruhovy, uhelKruhace) = detekujKruhacAParsujUhel(krok: kroky[aktualniKrokIndex])
+        } else {
+            (jeKruhovy, uhelKruhace) = (false, 90)
+        }
 
-        // Detekce zda jde o kruhový objezd
-        let (jeKruhovy, uhelKruhace) = detekujKruhacAParsujUhel(instrukce: textPokynu)
+        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue),\(jeKruhovy ? 1 : 0),\(Int(uhelKruhace))"
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
