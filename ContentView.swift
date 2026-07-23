@@ -6,6 +6,7 @@ import MapKit
 // MARK: - UUID musi presne sedet s ESP32 kodem (BeelinePrototyp_ESP32S3.ino)
 let SERVICE_UUID = CBUUID(string: "4fafc201-1fb5-459e-8fcc-c5c9c331914b")
 let CHARACTERISTIC_UUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b26a8")
+let TELEMETRIE_CHARACTERISTIC_UUID = CBUUID(string: "8f8e2eb1-3d16-4d2e-9c1a-9b6f7d6d0a01")
 
 // MARK: - Barvy jako hex
 extension Color {
@@ -101,6 +102,9 @@ class NastaveniManager: ObservableObject {
     @Published var tmavyRezim: Bool {
         didSet { UserDefaults.standard.set(tmavyRezim, forKey: "tmavyRezim") }
     }
+    @Published var logLimitRadku: Int {
+        didSet { UserDefaults.standard.set(logLimitRadku, forKey: "logLimitRadku") }
+    }
 
     var paleta: MotoPaleta { tmavyRezim ? .tmava : .svetla }
 
@@ -111,6 +115,7 @@ class NastaveniManager: ObservableObject {
         self.vzdalenostCervena = d.object(forKey: "vzdalenostCervena") as? Double ?? 15
         self.blikaniMod = BlikaniMod(rawValue: d.integer(forKey: "blikaniMod")) ?? .zadne
         self.tmavyRezim = d.object(forKey: "tmavyRezim") as? Bool ?? true
+        self.logLimitRadku = d.object(forKey: "logLimitRadku") as? Int ?? 200
     }
 
     // Vypocita zonu (0-3) podle vzdalenosti v metrech
@@ -119,6 +124,58 @@ class NastaveniManager: ObservableObject {
         if metry <= vzdalenostOranzova { return 2 }
         if metry <= vzdalenostZelena { return 1 }
         return 0
+    }
+}
+
+// MARK: - Denik (log udalosti), uklada se do souboru, prezije restart appky
+class DenikLogu: ObservableObject {
+    @Published var radky: [String] = []
+    private let soubor: URL
+    private let fronta = DispatchQueue(label: "denik.zapis")
+
+    init() {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        soubor = dir.appendingPathComponent("denik_log.txt")
+        nacist()
+    }
+
+    private func nacist() {
+        guard let obsah = try? String(contentsOf: soubor, encoding: .utf8) else { return }
+        radky = obsah.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+    }
+
+    private func ulozit() {
+        let obsah = radky.joined(separator: "\n")
+        try? obsah.write(to: soubor, atomically: true, encoding: .utf8)
+    }
+
+    func zapsat(_ text: String, limit: Int = 200) {
+        fronta.async { [weak self] in
+            guard let self = self else { return }
+            let formatovac = DateFormatter()
+            formatovac.dateFormat = "HH:mm:ss"
+            let radek = "[\(formatovac.string(from: Date()))] \(text)"
+            DispatchQueue.main.async {
+                self.radky.append(radek)
+                if self.radky.count > limit {
+                    self.radky.removeFirst(self.radky.count - limit)
+                }
+                self.ulozit()
+            }
+        }
+    }
+
+    // Zavola se pri zmene limitu v nastaveni - hned orizne existujici radky
+    func aplikovatLimit(_ limit: Int) {
+        if radky.count > limit {
+            radky.removeFirst(radky.count - limit)
+            ulozit()
+        }
+    }
+
+    func vymazat() {
+        radky = []
+        ulozit()
     }
 }
 
@@ -329,9 +386,23 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var centralManager: CBCentralManager!
     private var esp32Peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
+    private var telemetrieCharacteristic: CBCharacteristic?
+    private var rssiTimer: Timer?
 
     // Odkaz na nastaveni - injektuje ContentView pri vytvoreni
     var nastaveni: NastaveniManager?
+
+    // MARK: Debug/telemetrie
+    @Published var rssi: Int? = nil
+    @Published var teplotaCipu: Double? = nil
+    @Published var volnaRam: Int? = nil
+    @Published var minVolnaRam: Int? = nil
+    @Published var uptimeMs: Int? = nil
+    @Published var duvodRestartu: String = "---"
+    @Published var cpuMhz: Int? = nil
+    @Published var posledniPacketCas: Date? = nil
+
+    let denik = DenikLogu()
 
     @Published var stavPripojeni: String = "Odpojeno"
     @Published var poslednaZprava: String = "---"
@@ -573,29 +644,73 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         stavPripojeni = "Pripojeno, hledam sluzbu..."
         UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: poslednizesp32Klic)
         peripheral.discoverServices([SERVICE_UUID])
+        denik.zapsat("Pripojeno k \(peripheral.name ?? "ESP32")", limit: nastaveni?.logLimitRadku ?? 200)
+        spustitRSSIPolling(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stavPripojeni = "Odpojeno"
         writeCharacteristic = nil
+        telemetrieCharacteristic = nil
+        rssi = nil
+        rssiTimer?.invalidate()
+        denik.zapsat("Odpojeno, zkousim reconnect", limit: nastaveni?.logLimitRadku ?? 200)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.zkusChytreConnect()
         }
+    }
+
+    private func spustitRSSIPolling(_ peripheral: CBPeripheral) {
+        rssiTimer?.invalidate()
+        rssiTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak peripheral] _ in
+            peripheral?.readRSSI()
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+        DispatchQueue.main.async { self.rssi = RSSI.intValue }
     }
 
     // --- CBPeripheralDelegate ---
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == SERVICE_UUID {
-            peripheral.discoverCharacteristics([CHARACTERISTIC_UUID], for: service)
+            peripheral.discoverCharacteristics([CHARACTERISTIC_UUID, TELEMETRIE_CHARACTERISTIC_UUID], for: service)
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let chars = service.characteristics else { return }
-        for char in chars where char.uuid == CHARACTERISTIC_UUID {
-            writeCharacteristic = char
-            stavPripojeni = "SPOJENO"
+        for char in chars {
+            if char.uuid == CHARACTERISTIC_UUID {
+                writeCharacteristic = char
+                stavPripojeni = "SPOJENO"
+                denik.zapsat("Navigacni kanal pripraven", limit: nastaveni?.logLimitRadku ?? 200)
+            } else if char.uuid == TELEMETRIE_CHARACTERISTIC_UUID {
+                telemetrieCharacteristic = char
+                peripheral.setNotifyValue(true, for: char)
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == TELEMETRIE_CHARACTERISTIC_UUID,
+              let data = characteristic.value,
+              let text = String(data: data, encoding: .utf8) else { return }
+        rozparsujTelemetrii(text)
+    }
+
+    private func rozparsujTelemetrii(_ text: String) {
+        let pole = text.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard pole.count >= 6 else { return }
+        DispatchQueue.main.async {
+            self.teplotaCipu = Double(pole[0])
+            self.volnaRam = Int(pole[1])
+            self.minVolnaRam = Int(pole[2])
+            self.uptimeMs = Int(pole[3])
+            self.duvodRestartu = pole[4]
+            self.cpuMhz = Int(pole[5])
+            self.posledniPacketCas = Date()
         }
     }
 
@@ -711,6 +826,7 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
                     DispatchQueue.main.async {
                         self.prepocitavamTrasu = true
                     }
+                    denik.zapsat("Sjeto z trasy, spoustim prepocet", limit: nastaveni?.logLimitRadku ?? 200)
                     naOdchylkuOdTrasy?()
                 }
             } else {
@@ -886,6 +1002,7 @@ struct MapaView: UIViewRepresentable {
 
 // MARK: - Nastaveni obrazovka
 struct NastaveniView: View {
+    @ObservedObject var navi: NaviManager
     @ObservedObject var nastaveni: NastaveniManager
     @Environment(\.dismiss) private var dismiss
 
@@ -932,12 +1049,99 @@ struct NastaveniView: View {
                 } header: {
                     Text("Vzhled appky")
                 }
+
+                Section {
+                    NavigationLink("Debug") {
+                        DebugView(navi: navi, nastaveni: nastaveni)
+                    }
+                }
             }
             .navigationTitle("Nastavení")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Hotovo") { dismiss() }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Debug obrazovka (RSSI, teplota cipu, RAM, uptime, posledni packet)
+struct DebugView: View {
+    @ObservedObject var navi: NaviManager
+    @ObservedObject var nastaveni: NastaveniManager
+
+    var body: some View {
+        let paleta = nastaveni.paleta
+        Form {
+            Section {
+                radek("Síla signálu (RSSI)", navi.rssi.map { "\($0) dBm" } ?? "---")
+                radek("Teplota čipu ESP32", navi.teplotaCipu.map { String(format: "%.1f °C", $0) } ?? "---")
+                radek("Volná RAM", navi.volnaRam.map { "\($0 / 1024) kB" } ?? "---")
+                radek("Nejnižší volná RAM od startu", navi.minVolnaRam.map { "\($0 / 1024) kB" } ?? "---")
+                radek("Uptime ESP32", navi.uptimeMs.map { formatUptime($0) } ?? "---")
+                radek("Důvod posledního restartu", navi.duvodRestartu)
+                radek("Takt CPU", navi.cpuMhz.map { "\($0) MHz" } ?? "---")
+                radek("Poslední přijatý packet", navi.posledniPacketCas.map { presnyCas($0) } ?? "---")
+            } header: {
+                Text("Živá telemetrie ESP32")
+            } footer: {
+                Text("Teplota je teplota čipu, ne okolního vzduchu.")
+            }
+
+            Section {
+                Stepper("Počet uchovávaných řádků logu: \(nastaveni.logLimitRadku)",
+                        value: $nastaveni.logLimitRadku, in: 20...2000, step: 20)
+                    .onChange(of: nastaveni.logLimitRadku) { novyLimit in
+                        navi.denik.aplikovatLimit(novyLimit)
+                    }
+                NavigationLink("Zobrazit log") {
+                    LogView(denik: navi.denik)
+                }
+            } header: {
+                Text("Log událostí")
+            }
+        }
+        .navigationTitle("Debug")
+        .foregroundColor(paleta.textHlavni)
+    }
+
+    private func radek(_ nazev: String, _ hodnota: String) -> some View {
+        HStack {
+            Text(nazev)
+            Spacer()
+            Text(hodnota).foregroundColor(nastaveni.paleta.textTlumeny)
+        }
+    }
+
+    private func presnyCas(_ datum: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: datum)
+    }
+
+    private func formatUptime(_ ms: Int) -> String {
+        let s = ms / 1000
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        let sec = s % 60
+        return String(format: "%02d:%02d:%02d", h, m, sec)
+    }
+}
+
+// MARK: - Zobrazeni logu udalosti
+struct LogView: View {
+    @ObservedObject var denik: DenikLogu
+
+    var body: some View {
+        List(denik.radky.reversed(), id: \.self) { radek in
+            Text(radek)
+                .font(.system(.footnote, design: .monospaced))
+        }
+        .navigationTitle("Log")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Vymazat") { denik.vymazat() }
             }
         }
     }
@@ -1189,7 +1393,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $zobrazNastaveni) {
-            NastaveniView(nastaveni: nastaveni)
+            NastaveniView(navi: navi, nastaveni: nastaveni)
         }
     }
 
