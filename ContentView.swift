@@ -58,7 +58,6 @@ enum Moto {
             .foregroundColor(paleta.textTlumeny)
     }
 
-    // Barva podle navigacni zony: 0 normalni, 1 zelena, 2 oranzova, 3 cervena
     static func barvaZony(_ zona: Int, _ paleta: MotoPaleta) -> Color {
         switch zona {
         case 1: return signal
@@ -118,7 +117,6 @@ class NastaveniManager: ObservableObject {
         self.logLimitRadku = d.object(forKey: "logLimitRadku") as? Int ?? 200
     }
 
-    // Vypocita zonu (0-3) podle vzdalenosti v metrech
     func zonaProVzdalenost(_ metry: Double) -> Int {
         if metry <= vzdalenostCervena { return 3 }
         if metry <= vzdalenostOranzova { return 2 }
@@ -127,7 +125,7 @@ class NastaveniManager: ObservableObject {
     }
 }
 
-// MARK: - Denik (log udalosti), uklada se do souboru, prezije restart appky
+// MARK: - Denik (log udalosti)
 class DenikLogu: ObservableObject {
     @Published var radky: [String] = []
     private let soubor: URL
@@ -165,7 +163,6 @@ class DenikLogu: ObservableObject {
         }
     }
 
-    // Zavola se pri zmene limitu v nastaveni - hned orizne existujici radky
     func aplikovatLimit(_ limit: Int) {
         if radky.count > limit {
             radky.removeFirst(radky.count - limit)
@@ -179,7 +176,7 @@ class DenikLogu: ObservableObject {
     }
 }
 
-// MARK: - Opakovane pouzivane UI kousky
+// MARK: - UI komponenty
 struct MotoPanel<Content: View>: View {
     let paleta: MotoPaleta
     let content: Content
@@ -218,14 +215,12 @@ struct MotoTlacitko: View {
     }
 }
 
-// MARK: - Kruhovy smerovy ukazatel s podporou kruhoveho objezdu
+// MARK: - Ukazatele
 struct SmerovyUkazatel: View {
     var uhel: Int
     var zona: Int
     var blikaniMod: BlikaniMod
     var paleta: MotoPaleta
-    var jeObjezd: Bool = false
-    var uhelVyjezdu: Double = 90
 
     @State private var blikViditelny = true
 
@@ -248,22 +243,11 @@ struct SmerovyUkazatel: View {
                     .rotationEffect(.degrees(Double(i) * 15))
             }
 
-            if jeObjezd {
-                // Zobrazit ikonu kruhového objezdu
-                ObjezdIkona(
-                    uhelVyjezdu: uhelVyjezdu,
-                    barvaAktivni: barvaSipky,
-                    barvaPozadi: paleta.panelHranice
-                )
-                .scaleEffect(2.0) // Zvětšení do hlavního okna
-            } else {
-                // Klasická šipka
-                SipkaTvar()
-                    .fill(barvaSipky)
-                    .frame(width: 70, height: 110)
-                    .rotationEffect(.degrees(Double(uhel)))
-                    .animation(.easeOut(duration: 0.35), value: uhel)
-            }
+            SipkaTvar()
+                .fill(barvaSipky)
+                .frame(width: 70, height: 110)
+                .rotationEffect(.degrees(Double(uhel)))
+                .animation(.easeOut(duration: 0.35), value: uhel)
         }
         .frame(width: 200, height: 200)
         .onReceive(Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()) { _ in
@@ -289,13 +273,6 @@ struct SipkaTvar: Shape {
     }
 }
 
-// MARK: - Tvar pro ikonu kruhoveho objezdu (stejny princip jako SipkaTvar)
-// uhelVyjezdu: pozice vyjezdu na kruznici ve stupnich (matematicka konvence)
-//   0°   = vpravo  (1. vyjezd)
-//   90°  = nahore  (2. vyjezd / rovne)
-//   180° = vlevo   (3. vyjezd)
-//   270° = dole    (otocka - temer plny kruh zpet)
-// Vjezd je vzdy pevne dole (270°), auto "prijizdi" zespodu nahoru do objezdu.
 struct KruhovyObjezdTvar: Shape {
     var uhelVyjezdu: Double
 
@@ -307,7 +284,6 @@ struct KruhovyObjezdTvar: Shape {
         let vjezdRad: Double = 270 * Double.pi / 180
         let vyjezdRad: Double = uhelVyjezdu * Double.pi / 180
 
-        // Vjezdova usecka - od spodniho okraje ramecku do kruznice
         let vjezdBod = CGPoint(
             x: stred.x + polomer * CGFloat(cos(vjezdRad)),
             y: stred.y - polomer * CGFloat(sin(vjezdRad))
@@ -315,7 +291,6 @@ struct KruhovyObjezdTvar: Shape {
         p.move(to: CGPoint(x: stred.x, y: rect.maxY))
         p.addLine(to: vjezdBod)
 
-        // Oblouk uvnitr objezdu od vjezdu k vyjezdu (proti smeru hod. rucicek = kladny matematicky smer)
         p.addArc(
             center: stred,
             radius: polomer,
@@ -327,7 +302,6 @@ struct KruhovyObjezdTvar: Shape {
         return p
     }
 
-    // Bod a smer (ve stupnich pro rotaci SipkaTvar) na konci vyjezdove usecky - pro pripojeni hrotu sipky
     func vyjezdovyBodASmer(v rect: CGRect) -> (bod: CGPoint, smer: Double) {
         let stred = CGPoint(x: rect.midX, y: rect.midY)
         let polomer = min(rect.width, rect.height) * 0.28
@@ -336,13 +310,11 @@ struct KruhovyObjezdTvar: Shape {
             x: stred.x + polomer * CGFloat(cos(vyjezdRad)),
             y: stred.y - polomer * CGFloat(sin(vyjezdRad))
         )
-        // Prevod na "kompasovy" uhel pro rotationEffect (0° = nahoru, po smeru hod. rucicek)
         let kompas = (90 - uhelVyjezdu).truncatingRemainder(dividingBy: 360)
         return (bod, kompas)
     }
 }
 
-// MARK: - Slozena ikona objezdu (kruh + zvyraznena trasa + hrot sipky), stejny princip jako SmerovyUkazatel
 struct ObjezdIkona: View {
     var uhelVyjezdu: Double
     var barvaAktivni: Color
@@ -377,7 +349,7 @@ struct ObjezdIkona: View {
     }
 }
 
-// MARK: - Pomocna extension pro ziskani "manevrovaciho" bodu z MKRoute.Step
+// MARK: - Pomocna extension
 extension MKPolyline {
     var prvniBod: CLLocationCoordinate2D {
         guard pointCount > 0 else { return coordinate }
@@ -392,7 +364,7 @@ extension MKPolyline {
     }
 }
 
-// MARK: - Hlavni logika (poloha + BLE), bezi i na pozadi
+// MARK: - Hlavni logika (NaviManager)
 class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private var locationManager = CLLocationManager()
@@ -402,10 +374,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var telemetrieCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
-    // Odkaz na nastaveni - injektuje ContentView pri vytvoreni
     var nastaveni: NastaveniManager?
 
-    // MARK: Debug/telemetrie
+    // Telemetrie
     @Published var rssi: Int? = nil
     @Published var teplotaCipu: Double? = nil
     @Published var volnaRam: Int? = nil
@@ -422,46 +393,39 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     @Published var aktivni: Bool = false
     @Published var aktualniPoloha: CLLocationCoordinate2D?
 
-    @Published var jeKruhovyObjezd: Bool = false
-    @Published var uhelVyjezduObjezdu: Double = 90
-
     @Published var aktualniUhel: Int = 0
     @Published var aktualniVzdalenost: String = "---"
     @Published var aktualniCas: String = "---"
     @Published var aktualniPokyn: String = "---"
     @Published var aktualniZona: Int = 0
 
-    // MARK: Simulacni rezim (testovani bez GPS/ESP32)
+    // MARK: Kruhovy objezd
+    @Published var jeKruhovyObjezd: Bool = false
+    @Published var uhelVyjezduObjezdu: Double = 90.0
+
+    // Simulace
     @Published var simulaceAktivni: Bool = false
     @Published var simulujOdchylku: Bool = false
 
-    // MARK: Prepocitavani trasy po odbočení mimo ni
     @Published var prepocitavamTrasu: Bool = false
     var naOdchylkuOdTrasy: (() -> Void)?
 
-    // Turn-by-turn kroky trasy
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
 
-    // Vsechny body aktualni trasy (pro detekci odchylky) a pocitadlo mereni mimo trasu
     private var vsechnyBodyTrasy: [CLLocationCoordinate2D] = []
     private var odchylkaPocet: Int = 0
-    private let odchylkaLimit: Double = 50       // metru od trasy = povazujeme za "sjeto z trasy"
-    private let odchylkaPocetTreba: Int = 3      // po sobe jdouci mereni nad limitem, nez spustime prepocet
+    private let odchylkaLimit: Double = 50
+    private let odchylkaPocetTreba: Int = 3
 
-    // Filtr GPS sumu - klouzavy kruhovy prumer poslednich azimutu
     private var azimutHistorie: [Double] = []
     private let azimutHistorieMax = 5
 
-    // Smer, kterym se aktualne "divame" - pod prahem rychlosti podle kompasu telefonu,
-    // nad prahem podle smeru jizdy (GPS kurz). Sipka pak ukazuje relativne k tomuto smeru,
-    // ne podle svetovych stran.
     private var mujKompasovySmer: Double = 0
     private var smerHistorie: [Double] = []
     private let smerHistorieMax = 5
-    private let rychlostPrahMps: Double = 2.5   // cca 9 km/h - pod tim kompas, nad tim smer jizdy
+    private let rychlostPrahMps: Double = 2.5
 
-    // Simulace
     private var simulaceTimer: Timer?
     private var simulaceBody: [CLLocationCoordinate2D] = []
     private var simulaceIndex: Int = 0
@@ -469,6 +433,8 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     var cilLat: Double = 0
     var cilLon: Double = 0
     var cilNastaven: Bool = false
+
+    private let poslednizesp32Klic = "posledniESP32Identifier"
 
     override init() {
         super.init()
@@ -481,27 +447,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
-    private func detekujKruhovyObjezd(instrukce: String) -> (jeObjezd: Bool, uhel: Double) {
-        let text = instrukce.lowercased()
-        guard text.contains("kruh") || text.contains("objezd") || text.contains("roundabout") else {
-            return (false, 90)
-        }
-
-    // Detekce čísla výjezdu a přemapování na matematický úhel (0° vpravo, 90° rovně, 180° vlevo, 270° otočka)
-        var uhel: Double = 90 // Default 2. výjezd (rovně)
-        if text.contains("1.") || text.contains("první") || text.contains("1st") {
-            uhel = 0
-        } else if text.contains("2.") || text.contains("druhý") || text.contains("2nd") {
-            uhel = 90
-        } else if text.contains("3.") || text.contains("třetí") || text.contains("3rd") {
-            uhel = 180
-        } else if text.contains("4.") || text.contains("čtvrtý") || text.contains("4th") {
-            uhel = 270
-        }
-
-        return (true, uhel)
-    }
-    
     func pozadejOOpravneni() {
         locationManager.requestAlwaysAuthorization()
         locationManager.requestWhenInUseAuthorization()
@@ -513,7 +458,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // Nastaveni cile bez trasy (fallback - primy smer k cili)
     func nastavCil(lat: Double, lon: Double) {
         cilLat = lat
         cilLon = lon
@@ -525,7 +469,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         azimutHistorie = []
     }
 
-    // Nastaveni turn-by-turn trasy s kroky z MKDirections
     func nastavTrasu(kroky noveKroky: [MKRoute.Step], cilLat: Double, cilLon: Double) {
         self.kroky = noveKroky.filter { $0.polyline.pointCount > 0 }
         self.aktualniKrokIndex = 0
@@ -536,7 +479,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         self.odchylkaPocet = 0
         self.azimutHistorie = []
     }
-private let poslednizesp32Klic = "posledniESP32Identifier"
 
     func pripojitESP32() {
         stavPripojeni = "Hledam ESP32..."
@@ -571,7 +513,7 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         }
     }
 
-// MARK: - Testovaci simulace pohybu (bez GPS, ideal pro ladeni na stole)
+    // MARK: Simulace
     func spustitSimulaci(pocatecniPoloha: CLLocationCoordinate2D?) {
         guard cilNastaven else { return }
         simulaceAktivni = true
@@ -618,7 +560,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         let sumLon = Double.random(in: -0.00003...0.00003)
         let noveSouradnice = CLLocationCoordinate2D(latitude: bod.latitude + sumLat, longitude: bod.longitude + sumLon)
 
-        // Simulovany kurz a rychlost ze smeru mezi predchozim a novym bodem (krok = 1s, takze metry = m/s primo)
         let simKurz = spoctiAzimut(lat1: predchoziBod.latitude, lon1: predchoziBod.longitude, lat2: bod.latitude, lon2: bod.longitude)
         let simRychlost = spoctiVzdalenost(lat1: predchoziBod.latitude, lon1: predchoziBod.longitude, lat2: bod.latitude, lon2: bod.longitude)
 
@@ -650,7 +591,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return vysledek
     }
 
-    // Vyboulí prostredni tretinu trasy kolmo do strany, aby spolehlive prekrocila odchylkaLimit
     private func vyboulenaTrasa(_ body: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
         guard body.count > 5 else { return body }
         let start = body.count / 3
@@ -687,12 +627,11 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             )
         }
         return vysledek
-        }
+    }
 
-    // --- CBCentralManagerDelegate ---
+    // MARK: BLE Delegate
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
-            print("Bluetooth je zapnuty.")
             zkusChytreConnect()
         }
     }
@@ -736,7 +675,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         DispatchQueue.main.async { self.rssi = RSSI.intValue }
     }
 
-    // --- CBPeripheralDelegate ---
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == SERVICE_UUID {
@@ -779,14 +717,10 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         }
     }
 
-    // --- CLLocationManagerDelegate ---
+    // MARK: Location Delegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let poloha = locations.last else { return }
-
-        // Pri simulaci ignorujeme realnou GPS polohu, at si navzajem "neskacou"
         guard !simulaceAktivni else { return }
-
-        // Filtr GPS sumu - zahodime fixy s nepresnym nebo zapornym (neplatnym) horizontalAccuracy
         guard poloha.horizontalAccuracy >= 0, poloha.horizontalAccuracy < 65 else { return }
 
         DispatchQueue.main.async {
@@ -801,13 +735,11 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
-    // Kompas telefonu - pouziva se pri nizke rychlosti, kdy je GPS kurz nespolehlivy/chybi
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard newHeading.headingAccuracy >= 0 else { return }
         mujKompasovySmer = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
     }
 
-    // Obecny kruhovy prumer uhlu (0-360°) - pouziva se pro vyhlazeni azimutu i vlastniho smeru
     private func kruhovyPrumer(_ hodnoty: [Double]) -> Double {
         var sumSin = 0.0
         var sumCos = 0.0
@@ -821,7 +753,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return prumer
     }
 
-    // --- Filtr GPS sumu: klouzavy kruhovy prumer azimutu (zabranuje "klepani" sipky) ---
     private func vyhlazenyAzimut(_ novyAzimut: Double) -> Double {
         azimutHistorie.append(novyAzimut)
         if azimutHistorie.count > azimutHistorieMax {
@@ -830,7 +761,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return kruhovyPrumer(azimutHistorie)
     }
 
-    // --- Vyhlazeni vlastniho smeru (kompas nebo GPS kurz), stejny princip jako u azimutu ---
     private func vyhlazenySmer(_ novySmer: Double) -> Double {
         smerHistorie.append(novySmer)
         if smerHistorie.count > smerHistorieMax {
@@ -839,7 +769,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return kruhovyPrumer(smerHistorie)
     }
 
-    // --- Detekce odchylky od planovane trasy (vzdalenost bodu od nejblizsi usecky trasy) ---
     private func vzdalenostOdTrasy(bod: CLLocationCoordinate2D) -> Double {
         guard vsechnyBodyTrasy.count > 1 else { return 0 }
         var minVzdalenost = Double.greatestFiniteMagnitude
@@ -851,7 +780,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
     }
 
     private func vzdalenostOdUsecky(bod p: CLLocationCoordinate2D, a: CLLocationCoordinate2D, b: CLLocationCoordinate2D) -> Double {
-        // Jednoducha rovinna aproximace v metrech - dostatecne presna na kratke useky trasy
         let refLat = a.latitude * .pi / 180
         let metryNaStupenLat = 111_320.0
         let metryNaStupenLon = 111_320.0 * cos(refLat)
@@ -872,7 +800,28 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         return sqrt(dx * dx + dy * dy)
     }
 
-    // --- Vypocet, postup po krocich trasy a odeslani ---
+    // Detekce objezdu podle textove instrukce z Apple Maps / MapKit
+    private func detekujKruhovyObjezd(instrukce: String) -> (jeObjezd: Bool, uhelVyjezdu: Double) {
+        let text = instrukce.folding(options: .diacriticInsensitive, locale: .current).lowercased()
+
+        guard text.contains("kruh") || text.contains("objezd") || text.contains("roundabout") else {
+            return (false, 90.0)
+        }
+
+        if text.contains("1.") || text.contains("prvni") || text.contains("first") {
+            return (true, 0.0)    // 1. vyjezd (vpravo / 0°)
+        } else if text.contains("2.") || text.contains("druh") || text.contains("second") {
+            return (true, 90.0)   // 2. vyjezd (rovne / 90°)
+        } else if text.contains("3.") || text.contains("tret") || text.contains("third") {
+            return (true, 180.0)  // 3. vyjezd (vlevo / 180°)
+        } else if text.contains("4.") || text.contains("ctvrt") || text.contains("fourth") {
+            return (true, 270.0)  // 4. vyjezd (otocka / 270°)
+        }
+
+        return (true, 90.0) // Vychozi vyjezd rovne
+    }
+
+    // MARK: Vyhodnoceni pozice
     private func vyhodnotPozici(poloha: CLLocation) {
         let myLat = poloha.coordinate.latitude
         let myLon = poloha.coordinate.longitude
@@ -895,7 +844,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         let surovyAzimut = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
         let azimut = vyhlazenyAzimut(surovyAzimut)
 
-        // Vlastni smer: pri vyssi rychlosti podle GPS kurzu (smer jizdy), pri nizsi podle kompasu telefonu
         let rychlost = poloha.speed
         let surovySmer: Double
         if rychlost >= rychlostPrahMps, poloha.course >= 0 {
@@ -905,24 +853,21 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         }
         let mujSmer = vyhlazenySmer(surovySmer)
 
-        // Uhel sipky relativne k tomu, kam se prave divame/jedeme (0° = rovne pred nami)
         var relativniUhel = azimut - mujSmer
         relativniUhel = relativniUhel.truncatingRemainder(dividingBy: 360)
         if relativniUhel < 0 { relativniUhel += 360 }
 
-        // Postup na dalsi krok trasy, kdyz jsme dost blizko a jeste neni posledni krok
         if !kroky.isEmpty, !jePosledniKrok, vzdalenost < 20 {
             aktualniKrokIndex += 1
         }
 
-        // Kontrola odchylky od planovane trasy -> po par mereni mimo trasu spustime prepocet
         if !vsechnyBodyTrasy.isEmpty {
             let odchylka = vzdalenostOdTrasy(bod: poloha.coordinate)
             if odchylka > odchylkaLimit {
                 odchylkaPocet += 1
                 if odchylkaPocet >= odchylkaPocetTreba {
                     odchylkaPocet = 0
-                    vsechnyBodyTrasy = []   // zabrani opakovanemu spusteni, dokud neprijde nova trasa
+                    vsechnyBodyTrasy = []
                     DispatchQueue.main.async {
                         self.prepocitavamTrasu = true
                     }
@@ -934,24 +879,6 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             }
         }
 
-         // ... uvnitř vyhodnotPozici ...
-         let (jeObjezd, uhelVyjezdu) = detekujKruhovyObjezd(instrukce: textPokynu)
-
-         // Nahrazení pozice '---' ve zpravě za kód objezdu, např. 'K:90' pro ESP32
-         let typUkazatele = jeObjezd ? "K:\(Int(uhelVyjezdu))" : "---"
-         let zprava = "\(Int(relativniUhel)),\(typUkazatele),\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
-
-            DispatchQueue.main.async {
-                self.poslednaZprava = zprava
-                self.aktualniUhel = Int(relativniUhel)
-                self.aktualniVzdalenost = vzdText
-                self.aktualniCas = hodiny
-                self.aktualniPokyn = textPokynu
-                self.aktualniZona = zona
-                self.jeKruhovyObjezd = jeObjezd
-                self.uhelVyjezduObjezdu = uhelVyjezdu
-            }
-
         let prahy = nastaveni ?? NastaveniManager()
         let zona = prahy.zonaProVzdalenost(vzdalenost)
 
@@ -960,10 +887,12 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         formatter.dateFormat = "HH:mm"
         let hodiny = formatter.string(from: Date())
 
-        // Carky v pokynu by rozbily CSV parsovani na ESP32, nahradime strednikem
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+        let (jeObjezd, uhelVyjezdu) = detekujKruhovyObjezd(instrukce: textPokynu)
+        let typUkazatele = jeObjezd ? "K:\(Int(uhelVyjezdu))" : "---"
+
+        let zprava = "\(Int(relativniUhel)),\(typUkazatele),\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
@@ -972,6 +901,8 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             self.aktualniCas = hodiny
             self.aktualniPokyn = textPokynu
             self.aktualniZona = zona
+            self.jeKruhovyObjezd = jeObjezd
+            self.uhelVyjezduObjezdu = uhelVyjezdu
         }
         posliDoBLE(zprava)
     }
@@ -1003,10 +934,9 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         brng = (brng + 360).truncatingRemainder(dividingBy: 360)
         return brng
     }
-
 }
 
-// MARK: - Vyhledavani adres (MapKit nasepta jako Google Maps)
+// MARK: - Vyhledavani adres
 class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     private let completer = MKLocalSearchCompleter()
     @Published var navrhy: [MKLocalSearchCompletion] = []
@@ -1048,7 +978,6 @@ class AdresyHledac: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     }
 }
 
-// Vraci celou trasu (MKRoute), abychom meli k dispozici jak polyline pro mapu, tak kroky pro turn-by-turn
 func spocitejTrasu(z start: CLLocationCoordinate2D, do cil: CLLocationCoordinate2D, dokonceni: @escaping (MKRoute?) -> Void) {
     let request = MKDirections.Request()
     request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
@@ -1064,7 +993,7 @@ func spocitejTrasu(z start: CLLocationCoordinate2D, do cil: CLLocationCoordinate
     }
 }
 
-// MARK: - Mapa, s bezelem jako palubni displej
+// MARK: - Mapa
 struct MapaView: UIViewRepresentable {
     var cil: CLLocationCoordinate2D?
     var trasa: [CLLocationCoordinate2D]
@@ -1184,7 +1113,7 @@ struct NastaveniView: View {
     }
 }
 
-// MARK: - Debug obrazovka (RSSI, teplota cipu, RAM, uptime, posledni packet)
+// MARK: - Debug obrazovka
 struct DebugView: View {
     @ObservedObject var navi: NaviManager
     @ObservedObject var nastaveni: NastaveniManager
@@ -1247,7 +1176,7 @@ struct DebugView: View {
     }
 }
 
-// MARK: - Zobrazeni logu udalosti
+// MARK: - Log
 struct LogView: View {
     @ObservedObject var denik: DenikLogu
 
@@ -1265,7 +1194,7 @@ struct LogView: View {
     }
 }
 
-// MARK: - UI
+// MARK: - Hlavni UI (ContentView)
 struct ContentView: View {
     @StateObject private var navi = NaviManager()
     @StateObject private var hledac = AdresyHledac()
@@ -1319,16 +1248,25 @@ struct ContentView: View {
                     }
                     .padding(.top, 8)
 
+                    // MARK: Hlavni displej indikace
                     MotoPanel(paleta) {
                         VStack(spacing: 10) {
-                            SmerovyUkazatel(
-                                uhel: navi.aktualniUhel,
-                                zona: navi.aktualniZona,
-                                blikaniMod: nastaveni.blikaniMod,
-                                paleta: paleta,
-                                jeObjezd: navi.jeKruhovyObjezd,
-                                uhelVyjezdu: navi.uhelVyjezduObjezdu
-                            )
+                            if navi.jeKruhovyObjezd {
+                                ObjezdIkona(
+                                    uhelVyjezdu: navi.uhelVyjezduObjezdu,
+                                    barvaAktivni: Moto.barvaZony(navi.aktualniZona, paleta),
+                                    barvaPozadi: paleta.panelHranice
+                                )
+                                .scaleEffect(2.5)
+                                .frame(width: 200, height: 200)
+                            } else {
+                                SmerovyUkazatel(
+                                    uhel: navi.aktualniUhel,
+                                    zona: navi.aktualniZona,
+                                    blikaniMod: nastaveni.blikaniMod,
+                                    paleta: paleta
+                                )
+                            }
 
                             HStack {
                                 VStack(spacing: 2) {
@@ -1368,9 +1306,10 @@ struct ContentView: View {
                         }
                     }
 
+                    // MARK: Vyhledani cile
                     MotoPanel(paleta) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Moto.eyebrow("2 · Vyhledat cíl", paleta)
+                            Moto.eyebrow("Vyhledat cíl", paleta)
 
                             TextField("Zadej město, ulici...", text: $hledaniText)
                                 .font(.system(size: 16, design: .rounded))
@@ -1419,6 +1358,7 @@ struct ContentView: View {
                         }
                     }
 
+                    // MARK: Mapa
                     MotoPanel(paleta) {
                         VStack(alignment: .leading, spacing: 8) {
                             Moto.eyebrow("Mapa", paleta)
@@ -1429,6 +1369,7 @@ struct ContentView: View {
                         }
                     }
 
+                    // MARK: Tlacitka
                     VStack(spacing: 10) {
                         MotoTlacitko(titulek: "Povolit polohu", barva: paleta.textTlumeny, paleta: paleta) {
                             navi.pozadejOOpravneni()
@@ -1491,8 +1432,6 @@ struct ContentView: View {
             navi.nastaveni = nastaveni
             navi.pozadejOOpravneni()
 
-            // Callback z NaviManageru - kdyz zjisti odchylku od trasy, prepocitame ji tady
-            // (potrebujeme UI vrstvu kvuli spocitejTrasu a aktualizaci trasaBody pro mapu)
             navi.naOdchylkuOdTrasy = {
                 guard let start = navi.aktualniPoloha else {
                     DispatchQueue.main.async { navi.prepocitavamTrasu = false }
@@ -1525,7 +1464,6 @@ struct ContentView: View {
             zobrazNavrhy = false
             cilSouradnice = souradnice
 
-            // Fallback - primy smer k cili, kdyby se trasa nepodarila spocitat
             navi.nastavCil(lat: souradnice.latitude, lon: souradnice.longitude)
 
             guard let start = navi.aktualniPoloha else { return }
