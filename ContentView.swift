@@ -218,6 +218,7 @@ struct SipkaTvar: Shape {
         return p
     }
 }
+
 // MARK: - Tvar pro ikonu kruhoveho objezdu (stejny princip jako SipkaTvar)
 // uhelVyjezdu: pozice vyjezdu na kruznici ve stupnich (matematicka konvence)
 //   0°   = vpravo  (1. vyjezd)
@@ -233,13 +234,13 @@ struct KruhovyObjezdTvar: Shape {
         let stred = CGPoint(x: rect.midX, y: rect.midY)
         let polomer = min(rect.width, rect.height) * 0.28
 
-        let vjezdRad = CGFloat(270 * .pi / 180)
-        let vyjezdRad = CGFloat(uhelVyjezdu * .pi / 180)
+        let vjezdRad: Double = 270 * Double.pi / 180
+        let vyjezdRad: Double = uhelVyjezdu * Double.pi / 180
 
         // Vjezdova usecka - od spodniho okraje ramecku do kruznice
         let vjezdBod = CGPoint(
-            x: stred.x + polomer * cos(vjezdRad),
-            y: stred.y - polomer * sin(vjezdRad)
+            x: stred.x + polomer * CGFloat(cos(vjezdRad)),
+            y: stred.y - polomer * CGFloat(sin(vjezdRad))
         )
         p.move(to: CGPoint(x: stred.x, y: rect.maxY))
         p.addLine(to: vjezdBod)
@@ -248,8 +249,8 @@ struct KruhovyObjezdTvar: Shape {
         p.addArc(
             center: stred,
             radius: polomer,
-            startAngle: .radians(Double(vjezdRad)),
-            endAngle: .radians(Double(vyjezdRad)),
+            startAngle: .radians(vjezdRad),
+            endAngle: .radians(vyjezdRad),
             clockwise: false
         )
 
@@ -260,10 +261,10 @@ struct KruhovyObjezdTvar: Shape {
     func vyjezdovyBodASmer(v rect: CGRect) -> (bod: CGPoint, smer: Double) {
         let stred = CGPoint(x: rect.midX, y: rect.midY)
         let polomer = min(rect.width, rect.height) * 0.28
-        let vyjezdRad = CGFloat(uhelVyjezdu * .pi / 180)
+        let vyjezdRad: Double = uhelVyjezdu * Double.pi / 180
         let bod = CGPoint(
-            x: stred.x + polomer * cos(vyjezdRad),
-            y: stred.y - polomer * sin(vyjezdRad)
+            x: stred.x + polomer * CGFloat(cos(vyjezdRad)),
+            y: stred.y - polomer * CGFloat(sin(vyjezdRad))
         )
         // Prevod na "kompasovy" uhel pro rotationEffect (0° = nahoru, po smeru hod. rucicek)
         let kompas = (90 - uhelVyjezdu).truncatingRemainder(dividingBy: 360)
@@ -305,10 +306,6 @@ struct ObjezdIkona: View {
         return CGSize(width: bod.x - 32, height: bod.y - 32)
     }
 }
-
-ObjezdIkona(uhelVyjezdu: 0,   barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 1. vyjezd
-ObjezdIkona(uhelVyjezdu: 90,  barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 2. vyjezd / rovne
-ObjezdIkona(uhelVyjezdu: 180, barvaAktivni: paleta.zonaOK, barvaPozadi: paleta.panelHranice)   // 3. vyjezd
 
 // MARK: - Pomocna extension pro ziskani "manevrovaciho" bodu z MKRoute.Step
 extension MKPolyline {
