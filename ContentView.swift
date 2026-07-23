@@ -437,6 +437,14 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var azimutHistorie: [Double] = []
     private let azimutHistorieMax = 5
 
+    // Smer, kterym se aktualne "divame" - pod prahem rychlosti podle kompasu telefonu,
+    // nad prahem podle smeru jizdy (GPS kurz). Sipka pak ukazuje relativne k tomuto smeru,
+    // ne podle svetovych stran.
+    private var mujKompasovySmer: Double = 0
+    private var smerHistorie: [Double] = []
+    private let smerHistorieMax = 5
+    private let rychlostPrahMps: Double = 2.5   // cca 9 km/h - pod tim kompas, nad tim smer jizdy
+
     // Simulace
     private var simulaceTimer: Timer?
     private var simulaceBody: [CLLocationCoordinate2D] = []
@@ -461,6 +469,11 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         locationManager.requestAlwaysAuthorization()
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
+
+        if CLLocationManager.headingAvailable() {
+            locationManager.headingFilter = 2
+            locationManager.startUpdatingHeading()
+        }
     }
 
     // Nastaveni cile bez trasy (fallback - primy smer k cili)
@@ -561,11 +574,26 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             return
         }
         let bod = simulaceBody[simulaceIndex]
+        let predchoziBod = simulaceIndex > 0 ? simulaceBody[simulaceIndex - 1] : bod
         simulaceIndex += 1
 
         let sumLat = Double.random(in: -0.00003...0.00003)
         let sumLon = Double.random(in: -0.00003...0.00003)
-        let simPoloha = CLLocation(latitude: bod.latitude + sumLat, longitude: bod.longitude + sumLon)
+        let noveSouradnice = CLLocationCoordinate2D(latitude: bod.latitude + sumLat, longitude: bod.longitude + sumLon)
+
+        // Simulovany kurz a rychlost ze smeru mezi predchozim a novym bodem (krok = 1s, takze metry = m/s primo)
+        let simKurz = spoctiAzimut(lat1: predchoziBod.latitude, lon1: predchoziBod.longitude, lat2: bod.latitude, lon2: bod.longitude)
+        let simRychlost = spoctiVzdalenost(lat1: predchoziBod.latitude, lon1: predchoziBod.longitude, lat2: bod.latitude, lon2: bod.longitude)
+
+        let simPoloha = CLLocation(
+            coordinate: noveSouradnice,
+            altitude: 0,
+            horizontalAccuracy: 5,
+            verticalAccuracy: 5,
+            course: simKurz,
+            speed: simRychlost,
+            timestamp: Date()
+        )
 
         DispatchQueue.main.async {
             self.aktualniPoloha = simPoloha.coordinate
@@ -736,15 +764,17 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         print("Chyba GPS: \(error.localizedDescription)")
     }
 
-    // --- Filtr GPS sumu: klouzavy kruhovy prumer azimutu (zabranuje "klepani" sipky) ---
-    private func vyhlazenyAzimut(_ novyAzimut: Double) -> Double {
-        azimutHistorie.append(novyAzimut)
-        if azimutHistorie.count > azimutHistorieMax {
-            azimutHistorie.removeFirst()
-        }
+    // Kompas telefonu - pouziva se pri nizke rychlosti, kdy je GPS kurz nespolehlivy/chybi
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard newHeading.headingAccuracy >= 0 else { return }
+        mujKompasovySmer = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+    }
+
+    // Obecny kruhovy prumer uhlu (0-360°) - pouziva se pro vyhlazeni azimutu i vlastniho smeru
+    private func kruhovyPrumer(_ hodnoty: [Double]) -> Double {
         var sumSin = 0.0
         var sumCos = 0.0
-        for uhel in azimutHistorie {
+        for uhel in hodnoty {
             let rad = uhel * .pi / 180
             sumSin += sin(rad)
             sumCos += cos(rad)
@@ -752,6 +782,24 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         var prumer = atan2(sumSin, sumCos) * 180 / .pi
         if prumer < 0 { prumer += 360 }
         return prumer
+    }
+
+    // --- Filtr GPS sumu: klouzavy kruhovy prumer azimutu (zabranuje "klepani" sipky) ---
+    private func vyhlazenyAzimut(_ novyAzimut: Double) -> Double {
+        azimutHistorie.append(novyAzimut)
+        if azimutHistorie.count > azimutHistorieMax {
+            azimutHistorie.removeFirst()
+        }
+        return kruhovyPrumer(azimutHistorie)
+    }
+
+    // --- Vyhlazeni vlastniho smeru (kompas nebo GPS kurz), stejny princip jako u azimutu ---
+    private func vyhlazenySmer(_ novySmer: Double) -> Double {
+        smerHistorie.append(novySmer)
+        if smerHistorie.count > smerHistorieMax {
+            smerHistorie.removeFirst()
+        }
+        return kruhovyPrumer(smerHistorie)
     }
 
     // --- Detekce odchylky od planovane trasy (vzdalenost bodu od nejblizsi usecky trasy) ---
@@ -810,6 +858,21 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         let surovyAzimut = spoctiAzimut(lat1: myLat, lon1: myLon, lat2: cilovyBod.latitude, lon2: cilovyBod.longitude)
         let azimut = vyhlazenyAzimut(surovyAzimut)
 
+        // Vlastni smer: pri vyssi rychlosti podle GPS kurzu (smer jizdy), pri nizsi podle kompasu telefonu
+        let rychlost = poloha.speed
+        let surovySmer: Double
+        if rychlost >= rychlostPrahMps, poloha.course >= 0 {
+            surovySmer = poloha.course
+        } else {
+            surovySmer = mujKompasovySmer
+        }
+        let mujSmer = vyhlazenySmer(surovySmer)
+
+        // Uhel sipky relativne k tomu, kam se prave divame/jedeme (0° = rovne pred nami)
+        var relativniUhel = azimut - mujSmer
+        relativniUhel = relativniUhel.truncatingRemainder(dividingBy: 360)
+        if relativniUhel < 0 { relativniUhel += 360 }
+
         // Postup na dalsi krok trasy, kdyz jsme dost blizko a jeste neni posledni krok
         if !kroky.isEmpty, !jePosledniKrok, vzdalenost < 20 {
             aktualniKrokIndex += 1
@@ -845,11 +908,11 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
         // Carky v pokynu by rozbily CSV parsovani na ESP32, nahradime strednikem
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        let zprava = "\(Int(azimut)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
-            self.aktualniUhel = Int(azimut)
+            self.aktualniUhel = Int(relativniUhel)
             self.aktualniVzdalenost = vzdText
             self.aktualniCas = hodiny
             self.aktualniPokyn = textPokynu
@@ -1313,11 +1376,11 @@ struct ContentView: View {
                         MotoTlacitko(titulek: "Povolit polohu", barva: paleta.textTlumeny, paleta: paleta) {
                             navi.pozadejOOpravneni()
                         }
-                        MotoTlacitko(titulek: "1 · Připojit ESP32", barva: Moto.jantar, paleta: paleta) {
+                        MotoTlacitko(titulek: "Připojit se k navigaci", barva: Moto.jantar, paleta: paleta) {
                             navi.pripojitESP32()
                         }
                         MotoTlacitko(
-                            titulek: navi.aktivni ? "Zastavit navigaci" : "3 · Spustit navigaci",
+                            titulek: navi.aktivni ? "Zastavit navigaci" : "Spustit navigaci",
                             barva: navi.aktivni ? Moto.redline : Moto.signal,
                             paleta: paleta,
                             action: {
