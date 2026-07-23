@@ -218,12 +218,14 @@ struct MotoTlacitko: View {
     }
 }
 
-// MARK: - Kruhovy smerovy ukazatel (stejny princip jako displej na ESP32), s blikanim podle nastaveni
+// MARK: - Kruhovy smerovy ukazatel s podporou kruhoveho objezdu
 struct SmerovyUkazatel: View {
     var uhel: Int
     var zona: Int
     var blikaniMod: BlikaniMod
     var paleta: MotoPaleta
+    var jeObjezd: Bool = false
+    var uhelVyjezdu: Double = 90
 
     @State private var blikViditelny = true
 
@@ -246,11 +248,22 @@ struct SmerovyUkazatel: View {
                     .rotationEffect(.degrees(Double(i) * 15))
             }
 
-            SipkaTvar()
-                .fill(barvaSipky)
-                .frame(width: 70, height: 110)
-                .rotationEffect(.degrees(Double(uhel)))
-                .animation(.easeOut(duration: 0.35), value: uhel)
+            if jeObjezd {
+                // Zobrazit ikonu kruhového objezdu
+                ObjezdIkona(
+                    uhelVyjezdu: uhelVyjezdu,
+                    barvaAktivni: barvaSipky,
+                    barvaPozadi: paleta.panelHranice
+                )
+                .scaleEffect(2.0) // Zvětšení do hlavního okna
+            } else {
+                // Klasická šipka
+                SipkaTvar()
+                    .fill(barvaSipky)
+                    .frame(width: 70, height: 110)
+                    .rotationEffect(.degrees(Double(uhel)))
+                    .animation(.easeOut(duration: 0.35), value: uhel)
+            }
         }
         .frame(width: 200, height: 200)
         .onReceive(Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()) { _ in
@@ -409,6 +422,9 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     @Published var aktivni: Bool = false
     @Published var aktualniPoloha: CLLocationCoordinate2D?
 
+    @Published var jeKruhovyObjezd: Bool = false
+    @Published var uhelVyjezduObjezdu: Double = 90
+
     @Published var aktualniUhel: Int = 0
     @Published var aktualniVzdalenost: String = "---"
     @Published var aktualniCas: String = "---"
@@ -465,6 +481,27 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
+    private func detekujKruhovyObjezd(instrukce: String) -> (jeObjezd: Bool, uhel: Double) {
+        let text = instrukce.lowercased()
+        guard text.contains("kruh") || text.contains("objezd") || text.contains("roundabout") else {
+            return (false, 90)
+        }
+
+    // Detekce čísla výjezdu a přemapování na matematický úhel (0° vpravo, 90° rovně, 180° vlevo, 270° otočka)
+        var uhel: Double = 90 // Default 2. výjezd (rovně)
+        if text.contains("1.") || text.contains("první") || text.contains("1st") {
+            uhel = 0
+        } else if text.contains("2.") || text.contains("druhý") || text.contains("2nd") {
+            uhel = 90
+        } else if text.contains("3.") || text.contains("třetí") || text.contains("3rd") {
+            uhel = 180
+        } else if text.contains("4.") || text.contains("čtvrtý") || text.contains("4th") {
+            uhel = 270
+        }
+
+        return (true, uhel)
+    }
+    
     func pozadejOOpravneni() {
         locationManager.requestAlwaysAuthorization()
         locationManager.requestWhenInUseAuthorization()
@@ -897,6 +934,24 @@ private let poslednizesp32Klic = "posledniESP32Identifier"
             }
         }
 
+         // ... uvnitř vyhodnotPozici ...
+         let (jeObjezd, uhelVyjezdu) = detekujKruhovyObjezd(instrukce: textPokynu)
+
+         // Nahrazení pozice '---' ve zpravě za kód objezdu, např. 'K:90' pro ESP32
+         let typUkazatele = jeObjezd ? "K:\(Int(uhelVyjezdu))" : "---"
+         let zprava = "\(Int(relativniUhel)),\(typUkazatele),\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+
+            DispatchQueue.main.async {
+                self.poslednaZprava = zprava
+                self.aktualniUhel = Int(relativniUhel)
+                self.aktualniVzdalenost = vzdText
+                self.aktualniCas = hodiny
+                self.aktualniPokyn = textPokynu
+                self.aktualniZona = zona
+                self.jeKruhovyObjezd = jeObjezd
+                self.uhelVyjezduObjezdu = uhelVyjezdu
+            }
+
         let prahy = nastaveni ?? NastaveniManager()
         let zona = prahy.zonaProVzdalenost(vzdalenost)
 
@@ -1270,7 +1325,9 @@ struct ContentView: View {
                                 uhel: navi.aktualniUhel,
                                 zona: navi.aktualniZona,
                                 blikaniMod: nastaveni.blikaniMod,
-                                paleta: paleta
+                                paleta: paleta,
+                                jeObjezd: navi.jeKruhovyObjezd,
+                                uhelVyjezdu: navi.uhelVyjezduObjezdu
                             )
 
                             HStack {
