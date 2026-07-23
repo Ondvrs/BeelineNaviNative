@@ -365,6 +365,7 @@ extension MKPolyline {
 }
 
 // MARK: - Hlavni logika (NaviManager)
+// MARK: - Hlavní logika (poloha + BLE), běží i na pozadí
 class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private var locationManager = CLLocationManager()
@@ -374,9 +375,14 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     private var telemetrieCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
+    // Odkaz na nastavení - injektuje ContentView při vytvoření
     var nastaveni: NastaveniManager?
 
-    // Telemetrie
+    // MARK: - Stav pro kruhový objezd
+    @Published var jeKruhac: Bool = false
+    @Published var uhelVyjezduKruhac: Double = 90
+
+    // MARK: Debug/telemetrie
     @Published var rssi: Int? = nil
     @Published var teplotaCipu: Double? = nil
     @Published var volnaRam: Int? = nil
@@ -399,33 +405,34 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     @Published var aktualniPokyn: String = "---"
     @Published var aktualniZona: Int = 0
 
-    // MARK: Kruhovy objezd
-    @Published var jeKruhovyObjezd: Bool = false
-    @Published var uhelVyjezduObjezdu: Double = 90.0
-
-    // Simulace
+    // MARK: Simulační režim (testování bez GPS/ESP32)
     @Published var simulaceAktivni: Bool = false
     @Published var simulujOdchylku: Bool = false
 
+    // MARK: Přepočítávání trasy po odbočení mimo ni
     @Published var prepocitavamTrasu: Bool = false
     var naOdchylkuOdTrasy: (() -> Void)?
 
+    // Turn-by-turn kroky trasy
     private var kroky: [MKRoute.Step] = []
     private var aktualniKrokIndex: Int = 0
 
+    // Všechny body aktuální trasy (pro detekci odchylky) a počítadlo měření mimo trasu
     private var vsechnyBodyTrasy: [CLLocationCoordinate2D] = []
     private var odchylkaPocet: Int = 0
-    private let odchylkaLimit: Double = 50
-    private let odchylkaPocetTreba: Int = 3
+    private let odchylkaLimit: Double = 50       // metrů od trasy = považujeme za "sjeto z trasy"
+    private let odchylkaPocetTreba: Int = 3      // po sobě jdoucí měření nad limitem, než spustíme přepočet
 
+    // Filtr GPS šumu - klouzavý kruhový průměr posledních azimutů
     private var azimutHistorie: [Double] = []
     private let azimutHistorieMax = 5
 
     private var mujKompasovySmer: Double = 0
     private var smerHistorie: [Double] = []
     private let smerHistorieMax = 5
-    private let rychlostPrahMps: Double = 2.5
+    private let rychlostPrahMps: Double = 2.5   // cca 9 km/h
 
+    // Simulace
     private var simulaceTimer: Timer?
     private var simulaceBody: [CLLocationCoordinate2D] = []
     private var simulaceIndex: Int = 0
@@ -433,8 +440,6 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
     var cilLat: Double = 0
     var cilLon: Double = 0
     var cilNastaven: Bool = false
-
-    private let poslednizesp32Klic = "posledniESP32Identifier"
 
     override init() {
         super.init()
@@ -480,6 +485,8 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         self.azimutHistorie = []
     }
 
+    private let poslednizesp32Klic = "posledniESP32Identifier"
+
     func pripojitESP32() {
         stavPripojeni = "Hledam ESP32..."
         zkusChytreConnect()
@@ -513,7 +520,28 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // MARK: Simulace
+    // MARK: - Detekce kruhového objezdu z instrukce
+    private func detekujKruhacAParsujUhel(instrukce: String) -> (jeKruhac: Bool, uhel: Double) {
+        let text = instrukce.lowercased()
+        
+        guard text.contains("kruh") || text.contains("roundabout") || text.contains("objezd") else {
+            return (false, 90)
+        }
+        
+        if text.contains("1.") || text.contains("1st") || text.contains("první") || text.contains("prvním") {
+            return (true, 0)    // 1. výjezd = vpravo (0°)
+        } else if text.contains("2.") || text.contains("2nd") || text.contains("druhý") || text.contains("druhým") {
+            return (true, 90)   // 2. výjezd = rovně (90°)
+        } else if text.contains("3.") || text.contains("3rd") || text.contains("třetí") || text.contains("třetím") {
+            return (true, 180)  // 3. výjezd = vlevo (180°)
+        } else if text.contains("4.") || text.contains("4th") || text.contains("čtvrtý") || text.contains("čtvrtým") {
+            return (true, 270)  // 4. výjezd = otočení do protisměru (270°)
+        }
+        
+        return (true, 90)
+    }
+
+    // MARK: - Testovací simulace pohybu
     func spustitSimulaci(pocatecniPoloha: CLLocationCoordinate2D?) {
         guard cilNastaven else { return }
         simulaceAktivni = true
@@ -629,9 +657,10 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         return vysledek
     }
 
-    // MARK: BLE Delegate
+    // --- CBCentralManagerDelegate ---
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
+            print("Bluetooth je zapnuty.")
             zkusChytreConnect()
         }
     }
@@ -675,6 +704,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         DispatchQueue.main.async { self.rssi = RSSI.intValue }
     }
 
+    // --- CBPeripheralDelegate ---
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == SERVICE_UUID {
@@ -717,7 +747,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         }
     }
 
-    // MARK: Location Delegate
+    // --- CLLocationManagerDelegate ---
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let poloha = locations.last else { return }
         guard !simulaceAktivni else { return }
@@ -800,28 +830,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         return sqrt(dx * dx + dy * dy)
     }
 
-    // Detekce objezdu podle textove instrukce z Apple Maps / MapKit
-    private func detekujKruhovyObjezd(instrukce: String) -> (jeObjezd: Bool, uhelVyjezdu: Double) {
-        let text = instrukce.folding(options: .diacriticInsensitive, locale: .current).lowercased()
-
-        guard text.contains("kruh") || text.contains("objezd") || text.contains("roundabout") else {
-            return (false, 90.0)
-        }
-
-        if text.contains("1.") || text.contains("prvni") || text.contains("first") {
-            return (true, 0.0)    // 1. vyjezd (vpravo / 0°)
-        } else if text.contains("2.") || text.contains("druh") || text.contains("second") {
-            return (true, 90.0)   // 2. vyjezd (rovne / 90°)
-        } else if text.contains("3.") || text.contains("tret") || text.contains("third") {
-            return (true, 180.0)  // 3. vyjezd (vlevo / 180°)
-        } else if text.contains("4.") || text.contains("ctvrt") || text.contains("fourth") {
-            return (true, 270.0)  // 4. vyjezd (otocka / 270°)
-        }
-
-        return (true, 90.0) // Vychozi vyjezd rovne
-    }
-
-    // MARK: Vyhodnoceni pozice
+    // --- Výpočet, postup po krocích trasy a odeslání ---
     private func vyhodnotPozici(poloha: CLLocation) {
         let myLat = poloha.coordinate.latitude
         let myLon = poloha.coordinate.longitude
@@ -889,10 +898,10 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
 
         let bezpecnyPokyn = textPokynu.replacingOccurrences(of: ",", with: ";")
 
-        let (jeObjezd, uhelVyjezdu) = detekujKruhovyObjezd(instrukce: textPokynu)
-        let typUkazatele = jeObjezd ? "K:\(Int(uhelVyjezdu))" : "---"
+        let zprava = "\(Int(relativniUhel)),---,\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
 
-        let zprava = "\(Int(relativniUhel)),\(typUkazatele),\(zona),\(hodiny),\(vzdText),\(bezpecnyPokyn),\(prahy.blikaniMod.rawValue)"
+        // Detekce zda jde o kruhový objezd
+        let (jeKruhovy, uhelKruhace) = detekujKruhacAParsujUhel(instrukce: textPokynu)
 
         DispatchQueue.main.async {
             self.poslednaZprava = zprava
@@ -901,8 +910,10 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
             self.aktualniCas = hodiny
             self.aktualniPokyn = textPokynu
             self.aktualniZona = zona
-            self.jeKruhovyObjezd = jeObjezd
-            self.uhelVyjezduObjezdu = uhelVyjezdu
+            
+            // Nastavení stavu pro displej
+            self.jeKruhac = jeKruhovy
+            self.uhelVyjezduKruhac = uhelKruhace
         }
         posliDoBLE(zprava)
     }
@@ -934,6 +945,7 @@ class NaviManager: NSObject, ObservableObject, CLLocationManagerDelegate, CBCent
         brng = (brng + 360).truncatingRemainder(dividingBy: 360)
         return brng
     }
+
 }
 
 // MARK: - Vyhledavani adres
@@ -1195,6 +1207,7 @@ struct LogView: View {
 }
 
 // MARK: - Hlavni UI (ContentView)
+// MARK: - UI Obrazovka
 struct ContentView: View {
     @StateObject private var navi = NaviManager()
     @StateObject private var hledac = AdresyHledac()
@@ -1248,16 +1261,18 @@ struct ContentView: View {
                     }
                     .padding(.top, 8)
 
-                    // MARK: Hlavni displej indikace
+                    // HLAVNÍ MOTO PANEL S DISPLEJEM
                     MotoPanel(paleta) {
                         VStack(spacing: 10) {
-                            if navi.jeKruhovyObjezd {
+                            
+                            // Automatické přepínání mezi Šipkou a Kruhovým objezdům
+                            if navi.jeKruhac {
                                 ObjezdIkona(
-                                    uhelVyjezdu: navi.uhelVyjezduObjezdu,
+                                    uhelVyjezdu: navi.uhelVyjezduKruhac,
                                     barvaAktivni: Moto.barvaZony(navi.aktualniZona, paleta),
                                     barvaPozadi: paleta.panelHranice
                                 )
-                                .scaleEffect(2.5)
+                                .scaleEffect(2.2)
                                 .frame(width: 200, height: 200)
                             } else {
                                 SmerovyUkazatel(
@@ -1306,10 +1321,9 @@ struct ContentView: View {
                         }
                     }
 
-                    // MARK: Vyhledani cile
                     MotoPanel(paleta) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Moto.eyebrow("Vyhledat cíl", paleta)
+                            Moto.eyebrow("2 · Vyhledat cíl", paleta)
 
                             TextField("Zadej město, ulici...", text: $hledaniText)
                                 .font(.system(size: 16, design: .rounded))
@@ -1358,7 +1372,6 @@ struct ContentView: View {
                         }
                     }
 
-                    // MARK: Mapa
                     MotoPanel(paleta) {
                         VStack(alignment: .leading, spacing: 8) {
                             Moto.eyebrow("Mapa", paleta)
@@ -1369,7 +1382,6 @@ struct ContentView: View {
                         }
                     }
 
-                    // MARK: Tlacitka
                     VStack(spacing: 10) {
                         MotoTlacitko(titulek: "Povolit polohu", barva: paleta.textTlumeny, paleta: paleta) {
                             navi.pozadejOOpravneni()
@@ -1480,7 +1492,6 @@ struct ContentView: View {
         }
     }
 }
-
 struct StavIndikator: View {
     let stav: String
     let paleta: MotoPaleta
